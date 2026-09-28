@@ -57,6 +57,8 @@ describe("link: card-bound sessions", () => {
     // beyond the board staying coherent — here we assert link.list stays empty
     // right after this test file's own work session completed.
     const links = await server.jazz["link.list"]({})
-    expect(links.links.every((l) => typeof l.sessionID === "string" && typeof l.cardID === "string")).toBe(true)
+    expect(
+      links.links.every((l: { sessionID: string; cardID: string }) => typeof l.sessionID === "string" && typeof l.cardID === "string"),
+    ).toBe(true)
   })
 })
