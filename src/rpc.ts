@@ -104,6 +104,31 @@ export const JazzRpc = Rpc.define({
       }),
       errors: {},
     },
+    "card.work": {
+      input: z.object({ cardID: z.string(), prompt: z.string().min(1) }),
+      output: z.object({ sessionID: z.string(), cardID: z.string() }),
+      errors: {
+        unknown_card: z.object({ cardID: z.string() }),
+      },
+    },
+    "link.get": {
+      input: z.object({ sessionID: z.string() }),
+      output: z.object({
+        link: z
+          .object({ cardID: z.string(), startedAt: z.number() })
+          .nullable(),
+      }),
+      errors: {},
+    },
+    "link.list": {
+      input: z.object({}).strict(),
+      output: z.object({
+        links: z.array(
+          z.object({ sessionID: z.string(), cardID: z.string(), startedAt: z.number() }),
+        ),
+      }),
+      errors: {},
+    },
   },
   events: {
     "card.moved": {

@@ -5,6 +5,7 @@ import { asJsonStorage } from "./storage"
 import { BoardError, createBoardService } from "./service"
 import { createCronService, CronError, type CronUpsertInput } from "./cron-service"
 import { catchupPlan, dueJobs, leaseAlive, nextRunISO, type CatchupPolicy, type CronJob, type CronRun } from "./cron"
+import { createLinkRegistry, isTerminalOutcome, OUTCOME_LANES as OUTCOME_LANES_MAP, transitionLane, type SessionOutcome } from "./link"
 import { JazzRpc } from "./rpc"
 
 const TICK_MS = 15_000
@@ -108,6 +109,28 @@ export default Plugin.define({
         const runs = await cronService.readRuns()
         return { runs: input.jobID ? runs.filter((r) => r.jobID === input.jobID) : runs }
       },
+      "card.work": async (input, { error }) => {
+        try {
+          return await work(input)
+        } catch (e) {
+          if (e instanceof BoardError && e.code === "unknown-card") {
+            return error("unknown_card", e.message, { cardID: input.cardID })
+          }
+          throw e
+        }
+      },
+      "link.get": async (input) => {
+        const link = registry.get(input.sessionID)
+        return { link: link ? { cardID: link.cardID, startedAt: link.startedAt } : null }
+      },
+      "link.list": async () => {
+        const links = [...registry.all().entries()].map(([sessionID, l]) => ({
+          sessionID,
+          cardID: l.cardID,
+          startedAt: l.startedAt,
+        }))
+        return { links }
+      },
     })
 
     emitCronFired = async (event) => {
@@ -119,6 +142,54 @@ export default Plugin.define({
     emitMoved = async (event) => {
       await registration.events.emit("card.moved", event)
     }
+
+    // ---- link (Task 4): the ONLY bridge between board and sessions.
+    // kanban_work binds a session to a card; execution events move the card.
+    const registry = createLinkRegistry()
+
+    const work = async (input: { cardID: string; prompt: string }): Promise<{ sessionID: string; cardID: string }> => {
+      const board = await service.get()
+      const card = board.cards[input.cardID]
+      if (!card) throw new BoardError("unknown-card", `unknown card: ${input.cardID}`)
+      await service.move({ cardID: input.cardID, lane: "in_progress" })
+      const session = await ctx.session.create({ title: `jazz:${card.title}` })
+      registry.bind(session.id, input.cardID, Date.now())
+      await ctx.session.prompt({
+        sessionID: session.id,
+        text: `You are working card "${card.title}" (${input.cardID}).\n\n${input.prompt}`,
+      })
+      return { sessionID: session.id, cardID: input.cardID }
+    }
+
+    const evController = new AbortController()
+    const pump = (async () => {
+      try {
+        for await (const event of ctx.event.subscribe({ signal: evController.signal })) {
+          const type = (event as { type?: string }).type
+          if (typeof type !== "string" || !type.startsWith("session.execution.")) continue
+          const outcome = type.slice("session.execution.".length) as SessionOutcome
+          if (!(outcome in OUTCOME_LANES_MAP)) continue
+          const data = (event as { data?: { sessionID?: string } }).data
+          const sessionID = data?.sessionID
+          if (!sessionID) continue
+          const link = registry.get(sessionID)
+          if (!link) continue // session we didn't start — not ours to move
+          const board = await service.get()
+          const card = board.cards[link.cardID]
+          if (!card) {
+            registry.drop(sessionID)
+            continue
+          }
+          const target = transitionLane(card, outcome)
+          if (target) await service.move({ cardID: link.cardID, lane: target })
+          if (isTerminalOutcome(outcome)) registry.drop(sessionID)
+        }
+      } catch (e) {
+        if (!(e instanceof Error && e.name === "AbortError")) {
+          console.error("[jazz] event pump error:", e)
+        }
+      }
+    })()
 
     // ---- cron (Task 3): dumb scheduler — prompt + schedule → fresh session.
     // Knows nothing about cards (design: board/cron decoupled; link is the
@@ -243,6 +314,18 @@ export default Plugin.define({
           return { content: `card ${input.cardID} removed` }
         },
       })
+
+      editor.add({
+        name: "work",
+        description:
+          "Start an agent session working a card: moves it to in_progress and binds the session so completion moves the card to done (or blocked on failure)",
+        input: z.object({ cardID: z.string(), prompt: z.string().min(1) }),
+        options: { namespace: "kanban" },
+        execute: async (input) => {
+          const r = await work(input)
+          return { content: `session ${r.sessionID} started for card ${r.cardID}; it will move the card when done` }
+        },
+      })
     })
 
     const timer = setInterval(() => {
@@ -252,6 +335,8 @@ export default Plugin.define({
 
     return async () => {
       clearInterval(timer)
+      evController.abort()
+      await pump
       await cronService.clearLease(instanceID)
       await toolReg.dispose()
       await registration.dispose()
