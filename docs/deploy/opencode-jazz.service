@@ -1,0 +1,31 @@
+# opencode-jazz.service — dedicated 24/7 server topology (optional)
+#
+# Use this INSTEAD of the shared background service when the board/cron must
+# be always-on. Run exactly ONE server: either this unit OR the shared
+# service — never both with the same storage, or the leader lease has two
+# candidates booting simultaneously.
+#
+# Install:
+#   mkdir -p ~/.config/systemd/user
+#   cp docs/deploy/opencode-jazz.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now opencode-jazz
+# Then point clients at it:
+#   opencode --server http://127.0.0.1:4096
+#
+# Do NOT run `opencode service start` while this unit runs.
+
+[Unit]
+Description=OpenCode V2 server (opencode-jazz host)
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/opencode2 serve --hostname 127.0.0.1 --port 4096
+Restart=on-failure
+RestartSec=5
+# The plugin's catch-up (fire-missed default) covers jobs missed while down.
+Environment=XDG_CONFIG_HOME=%h/.config/opencode
+
+[Install]
+WantedBy=default.target
