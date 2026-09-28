@@ -9,18 +9,16 @@
   },
   "scripts": {
     "test": "vitest run test/unit",
+    "pretest:integration": "bash scripts/stage-plugin.sh",
     "test:integration": "vitest run test/integration",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@opencode/plugin": "^2.0.18",
     "croner": "^9.1.0",
     "zod": "^4.1.0"
   },
-  "peerDependencies": {
-    "@opencode/plugin": "^2.0.18"
-  },
   "devDependencies": {
-    "@opencode/plugin": "^2.0.18",
     "typescript": "^5.9.0",
     "vitest": "^3.2.0"
   }
