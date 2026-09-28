@@ -1,0 +1,27 @@
+{
+  "name": "opencode-jazz",
+  "version": "0.1.0",
+  "description": "Kanban board + cron scheduler for OpenCode V2 — one plugin, three decoupled modules",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./tui": "./src/tui.tsx"
+  },
+  "scripts": {
+    "test": "vitest run test/unit",
+    "test:integration": "vitest run test/integration",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "croner": "^9.1.0",
+    "zod": "^4.1.0"
+  },
+  "peerDependencies": {
+    "@opencode/plugin": "^2.0.18"
+  },
+  "devDependencies": {
+    "@opencode/plugin": "^2.0.18",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  }
+}
