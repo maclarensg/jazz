@@ -14,6 +14,17 @@ export const boardSchema = z.object({
   lanes: z.record(z.string(), z.array(z.string())),
 })
 
+export const cronJobSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  cronExpr: z.string(),
+  prompt: z.string(),
+  agent: z.string().optional(),
+  enabled: z.boolean(),
+  nextRun: z.string().optional(),
+  lastRun: z.string().optional(),
+})
+
 export const JazzRpc = Rpc.define({
   id: "jazz",
   methods: {
@@ -44,6 +55,55 @@ export const JazzRpc = Rpc.define({
         unknown_card: z.object({ cardID: z.string() }),
       },
     },
+    "cron.upsert": {
+      input: z.object({
+        name: z.string().min(1),
+        cronExpr: z.string().min(1),
+        prompt: z.string().min(1),
+        agent: z.string().optional(),
+        enabled: z.boolean().optional(),
+      }),
+      output: cronJobSchema,
+      errors: {
+        invalid_cron: z.object({ cronExpr: z.string() }),
+      },
+    },
+    "cron.list": {
+      input: z.object({}).strict(),
+      output: z.object({ jobs: z.array(cronJobSchema) }),
+      errors: {},
+    },
+    "cron.remove": {
+      input: z.object({ jobID: z.string() }),
+      output: z.object({}).strict(),
+      errors: {
+        unknown_job: z.object({ jobID: z.string() }),
+      },
+    },
+    "cron.runNow": {
+      input: z.object({ jobID: z.string() }),
+      output: z.object({ sessionID: z.string(), status: z.string() }),
+      errors: {
+        unknown_job: z.object({ jobID: z.string() }),
+      },
+    },
+    "cron.runs": {
+      input: z.object({ jobID: z.string().optional() }),
+      output: z.object({
+        runs: z.array(
+          z.object({
+            jobID: z.string(),
+            jobName: z.string(),
+            sessionID: z.string().optional(),
+            firedAt: z.string(),
+            status: z.string(),
+            error: z.string().optional(),
+            missed: z.boolean().optional(),
+          }),
+        ),
+      }),
+      errors: {},
+    },
   },
   events: {
     "card.moved": {
@@ -52,6 +112,20 @@ export const JazzRpc = Rpc.define({
         title: z.string(),
         fromLane: z.string(),
         toLane: z.string(),
+      }),
+    },
+    "cron.fired": {
+      schema: z.object({
+        jobID: z.string(),
+        jobName: z.string(),
+        sessionID: z.string(),
+      }),
+    },
+    "cron.failed": {
+      schema: z.object({
+        jobID: z.string(),
+        jobName: z.string(),
+        error: z.string(),
       }),
     },
   },

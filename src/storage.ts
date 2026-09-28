@@ -11,6 +11,7 @@ export class StorageError extends Error {
 export interface JsonStorage {
   get(key: string): Promise<unknown | undefined>
   set(key: string, value: unknown): Promise<void>
+  remove(key: string): Promise<void>
 }
 
 export async function readJson(storage: JsonStorage, key: string): Promise<unknown | undefined> {
@@ -27,6 +28,9 @@ export function createMemoryStorage(): JsonStorage {
     get: async (key) => map.get(key),
     set: async (key, value) => {
       map.set(key, structuredClone(value))
+    },
+    remove: async (key) => {
+      map.delete(key)
     },
   }
 }

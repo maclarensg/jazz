@@ -1,8 +1,14 @@
 import { Plugin } from "@opencode/plugin"
+import { randomUUID } from "node:crypto"
 import { z } from "zod"
 import { asJsonStorage } from "./storage"
 import { BoardError, createBoardService } from "./service"
+import { createCronService, CronError, type CronUpsertInput } from "./cron-service"
+import { catchupPlan, dueJobs, leaseAlive, nextRunISO, type CatchupPolicy, type CronJob, type CronRun } from "./cron"
 import { JazzRpc } from "./rpc"
+
+const TICK_MS = 15_000
+const LEASE_MS = 30_000
 
 /**
  * opencode-jazz server plugin.
@@ -23,6 +29,8 @@ export default Plugin.define({
         : undefined
 
     let emitMoved: ((e: { cardID: string; title: string; fromLane: string; toLane: string }) => Promise<void>) | undefined
+    let emitCronFired: ((e: { jobID: string; jobName: string; sessionID: string }) => Promise<void>) | undefined
+    let emitCronFailed: ((e: { jobID: string; jobName: string; error: string }) => Promise<void>) | undefined
 
     const service = createBoardService(storage, {
       ...(lanes ? { lanes } : {}),
@@ -63,10 +71,122 @@ export default Plugin.define({
           throw e
         }
       },
+      "cron.upsert": async (input, { error }) => {
+        try {
+          return await cronService.upsert(input as CronUpsertInput)
+        } catch (e) {
+          if (e instanceof CronError && e.code === "invalid-cron") {
+            return error("invalid_cron", e.message, { cronExpr: input.cronExpr })
+          }
+          throw e
+        }
+      },
+      "cron.list": async () => ({ jobs: await cronService.list() }),
+      "cron.remove": async (input, { error }) => {
+        try {
+          await cronService.remove(input.jobID)
+          return {}
+        } catch (e) {
+          if (e instanceof CronError && e.code === "unknown-job") {
+            return error("unknown_job", e.message, { jobID: input.jobID })
+          }
+          throw e
+        }
+      },
+      "cron.runNow": async (input, { error }) => {
+        const job = await cronService.get(input.jobID)
+        if (!job) return error("unknown_job", `unknown job: ${input.jobID}`, { jobID: input.jobID })
+        const run = await fireJob(job, false)
+        const nextAt = nextRunISO(job.cronExpr, new Date())
+        await cronService.updateJob(job.id, {
+          lastRun: run.firedAt,
+          ...(nextAt ? { nextRun: nextAt } : {}),
+        })
+        return { sessionID: run.sessionID ?? "", status: run.status }
+      },
+      "cron.runs": async (input) => {
+        const runs = await cronService.readRuns()
+        return { runs: input.jobID ? runs.filter((r) => r.jobID === input.jobID) : runs }
+      },
     })
 
+    emitCronFired = async (event) => {
+      await registration.events.emit("cron.fired", event)
+    }
+    emitCronFailed = async (event) => {
+      await registration.events.emit("cron.failed", event)
+    }
     emitMoved = async (event) => {
       await registration.events.emit("card.moved", event)
+    }
+
+    // ---- cron (Task 3): dumb scheduler — prompt + schedule → fresh session.
+    // Knows nothing about cards (design: board/cron decoupled; link is the
+    // only bridge, arriving in Task 4).
+    const cronOptions = (ctx.options ?? {}) as { catchup?: unknown }
+    const policy: CatchupPolicy = cronOptions.catchup === "skip-missed" ? "skip-missed" : "fire-missed"
+    const cronService = createCronService(storage)
+    const instanceID = randomUUID()
+
+    const fireJob = async (job: CronJob, missed: boolean): Promise<CronRun> => {
+      const run: CronRun = {
+        jobID: job.id,
+        jobName: job.name,
+        firedAt: new Date().toISOString(),
+        status: "fired",
+        ...(missed ? { missed: true } : {}),
+      }
+      try {
+        const session = await ctx.session.create({ title: `jazz:${job.name}` })
+        if (job.agent) await ctx.session.switchAgent({ sessionID: session.id, agent: job.agent })
+        await ctx.session.prompt({ sessionID: session.id, text: job.prompt })
+        run.sessionID = session.id
+        await emitCronFired?.({ jobID: job.id, jobName: job.name, sessionID: session.id })
+      } catch (e) {
+        run.status = "error"
+        run.error = e instanceof Error ? e.message : String(e)
+        await emitCronFailed?.({ jobID: job.id, jobName: job.name, error: run.error })
+      }
+      await cronService.appendRun(run)
+      return run
+    }
+
+    let firstTick = true
+    let ticking = false
+    const tick = async (): Promise<void> => {
+      if (ticking) return
+      ticking = true
+      try {
+        const now = new Date()
+        const lease = await cronService.readLease()
+        if (!leaseAlive(lease, instanceID, now.getTime())) {
+          if (lease && now.getTime() < lease.expiresAt) return // another instance leads
+          await cronService.writeLease({ instanceID, expiresAt: now.getTime() + LEASE_MS })
+        } else {
+          await cronService.writeLease({ instanceID, expiresAt: now.getTime() + LEASE_MS })
+        }
+
+        const jobs = await cronService.list()
+        let toFire: { job: CronJob; missed: boolean }[]
+        if (firstTick) {
+          firstTick = false
+          const plan = catchupPlan(jobs, now, policy)
+          await cronService.replaceJobs(plan.jobs)
+          toFire = plan.fire.map((job) => ({ job, missed: true }))
+        } else {
+          toFire = dueJobs(jobs, now).map((job) => ({ job, missed: false }))
+        }
+        for (const { job, missed } of toFire) {
+          const run = await fireJob(job, missed)
+          const nextAt = nextRunISO(job.cronExpr, new Date())
+          await cronService.updateJob(job.id, {
+            lastRun: run.firedAt,
+            ...(nextAt ? { nextRun: nextAt } : {}),
+          })
+        }
+      } finally {
+        ticking = false
+      }
     }
 
     const boardService = service
@@ -125,7 +245,14 @@ export default Plugin.define({
       })
     })
 
+    const timer = setInterval(() => {
+      void tick().catch(() => {}) // tick errors are recorded as failed runs; never kill the interval
+    }, TICK_MS)
+    void tick()
+
     return async () => {
+      clearInterval(timer)
+      await cronService.clearLease(instanceID)
       await toolReg.dispose()
       await registration.dispose()
     }

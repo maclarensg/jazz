@@ -10,6 +10,7 @@ import { JazzRpc } from "../../src/rpc"
 
 export interface JazzServer {
   baseUrl: string
+  dataDir: string
   client: ReturnType<typeof OpenCode.make>
   jazz: ReturnType<ReturnType<typeof OpenCode.make>["rpc"]>
   close(): Promise<void>
@@ -42,28 +43,49 @@ async function freePort(): Promise<number> {
  *   - auth is HTTP Basic, username `opencode`, password as printed by serve
  *   - the plugin auto-scan loads <config>/plugins/<dir>/index.* (root entry)
  */
-export async function startJazzServer(): Promise<JazzServer> {
+export interface JazzServerOptions {
+  /**
+   * XDG_DATA_HOME for the server. Defaults to a fresh temp dir per server so
+   * test runs never inherit stale jobs/cards from the shared data dir or from
+   * each other. Pass the SAME dir to two servers to test shared-storage
+   * leader election (double-instance).
+   */
+  dataDir?: string
+}
+
+export async function startJazzServer(opts: JazzServerOptions = {}): Promise<JazzServer> {
   const bin = process.env.OPENCODE_BIN ?? "opencode2"
   const stage = process.env.JAZZ_STAGE_DIR ?? "/tmp/opencode/jazz-it/xdg/opencode/plugins/jazz"
   const xdgConfig = path.dirname(path.dirname(path.dirname(stage)))
+  const dataDir = opts.dataDir ?? (await mkdtemp(path.join(tmpdir(), "jazz-data-")))
   const cwd = await mkdtemp(path.join(tmpdir(), "jazz-it-"))
   const port = await freePort()
 
   const child = spawn(bin, ["serve", "--hostname", "127.0.0.1", "--port", String(port)], {
     cwd,
-    env: { ...process.env, XDG_CONFIG_HOME: xdgConfig },
+    env: { ...process.env, XDG_CONFIG_HOME: xdgConfig, XDG_DATA_HOME: dataDir },
     stdio: ["ignore", "pipe", "pipe"],
+    // Own process group: worker teardown must not take the server down with it.
+    detached: true,
   })
 
   const stderr: string[] = []
   child.stderr?.on("data", (chunk) => stderr.push(String(chunk)))
+  child.on("exit", (code, signal) => {
+    // Surfaced late-exits: a serve dying mid-test must not be silent.
+    console.error(`[harness] serve on port ${port} exited (code=${code} signal=${signal})\nstderr:\n${stderr.join("")}`)
+  })
 
   let password: string | undefined
 
   const baseUrl = await new Promise<string>((resolve, reject) => {
     let listening = false
     const finish = () => {
-      if (listening && password) resolve(`http://127.0.0.1:${port}`)
+      if (listening && password) {
+        clearTimeout(timer)
+        console.error(`[harness] serve booted on port ${port} (pid ${child.pid})`)
+        resolve(`http://127.0.0.1:${port}`)
+      }
     }
     const timer = setTimeout(() => {
       child.kill("SIGKILL")
@@ -88,11 +110,19 @@ export async function startJazzServer(): Promise<JazzServer> {
 
   return {
     baseUrl,
+    dataDir,
     client,
     jazz: client.rpc(JazzRpc),
     close: async () => {
+      child.removeAllListeners("exit")
       child.kill("SIGTERM")
-      await new Promise<void>((resolve) => child.on("exit", () => resolve()))
+      const exited = new Promise<void>((resolve) => child.on("exit", () => resolve()))
+      const timeout = new Promise<void>((resolve) => setTimeout(resolve, 2_000))
+      await Promise.race([exited, timeout])
+      if (child.exitCode === null && !child.signalCode) {
+        child.kill("SIGKILL")
+        await new Promise<void>((resolve) => child.on("exit", () => resolve()))
+      }
     },
   }
 }
