@@ -1,0 +1,34 @@
+{
+  "scanned": 1177,
+  "kept": 240,
+  "dropped": {
+    "frontmatter": 15,
+    "name": 6,
+    "description": 27,
+    "body": 116
+  },
+  "perCategory": {
+    "qa": 21,
+    "product": 21,
+    "docs": 21,
+    "general": 21,
+    "data": 21,
+    "security": 21,
+    "design": 21,
+    "engineering": 21,
+    "research": 13,
+    "ops": 20,
+    "business": 19,
+    "marketing": 20
+  },
+  "sources": {
+    "massive-agent-repo-1003": {
+      "files": 1013,
+      "kept": 850
+    },
+    "voltagent": {
+      "files": 164,
+      "kept": 163
+    }
+  }
+}

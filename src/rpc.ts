@@ -12,6 +12,18 @@ export const notificationSchema = z.object({
   read: z.boolean(),
 })
 
+export const profileEntrySchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  category: z.string(),
+  tags: z.array(z.string()),
+  description: z.string(),
+  source: z.string(),
+  license: z.string(),
+  native: z.boolean(),
+  path: z.string(),
+})
+
 export const cardSchema = z.object({
   id: z.string(),
   title: z.string(),
@@ -237,6 +249,23 @@ export const JazzRpc = Rpc.define({
             outcome: z.enum(["assigned", "requeued", "accepted", "cancelled"]).optional(),
           }),
         ),
+      }),
+      errors: {},
+    },
+    "profiles.list": {
+      input: z.object({ q: z.string().optional(), category: z.string().optional() }),
+      output: z.object({
+        entries: z.array(profileEntrySchema),
+        total: z.number().int(),
+      }),
+      errors: {},
+    },
+    "profiles.stats": {
+      input: z.object({}),
+      output: z.object({
+        total: z.number().int(),
+        native: z.number().int(),
+        perCategory: z.record(z.string(), z.number().int()),
       }),
       errors: {},
     },

@@ -1,5 +1,6 @@
 import { Plugin } from "@opencode/plugin"
 import { randomUUID } from "node:crypto"
+import { existsSync, readFileSync } from "node:fs"
 import { z } from "zod"
 import { asJsonStorage } from "./storage"
 import { BoardError, createBoardService } from "./service"
@@ -9,6 +10,7 @@ import { createCronService, CronError, type CronUpsertInput } from "./cron-servi
 import { catchupPlan, dueJobs, leaseAlive, nextRunISO, type CatchupPolicy, type CronJob, type CronRun } from "./cron"
 import { createLinkRegistry, EXIT_NO_SUBMIT, isTerminalOutcome, OUTCOME_LANES as OUTCOME_LANES_MAP, reviewGuard, transitionLane, type SessionOutcome } from "./link"
 import { createRoutingService } from "./routing-service"
+import { normalizeRegistry, searchProfiles, topCandidates, type RegistryEntry } from "./profiles"
 import { JazzRpc } from "./rpc"
 
 const TICK_MS = 15_000
@@ -51,6 +53,32 @@ export default Plugin.define({
 
     const inboxService = createInboxService(storage)
     const routingService = createRoutingService(storage)
+
+    // ---- profile registry (imported corpus + soul roles; registry.json is
+    // the on-disk source of truth, scripts/import-profiles.sh refreshes it)
+    const registryUrl = new URL("../registry.json", import.meta.url)
+    let profileRegistry: RegistryEntry[] = []
+    try {
+      profileRegistry = existsSync(registryUrl) ? normalizeRegistry(JSON.parse(readFileSync(registryUrl, "utf8"))) : []
+    } catch (e) {
+      console.error("[jazz] registry.json unreadable — profiles unavailable:", e)
+    }
+    const registryById = new Map(profileRegistry.map((e) => [e.id, e]))
+    const roleText = (profile: string): string | null => {
+      const entry = registryById.get(profile)
+      if (!entry) return null
+      try {
+        const fileUrl = new URL(`../${entry.path}`, import.meta.url)
+        if (!existsSync(fileUrl)) return null
+        const text = readFileSync(fileUrl, "utf8")
+        const end = text.startsWith("---") ? text.indexOf("\n---", 3) : -1
+        const body = end >= 0 ? text.slice(end + 4) : text
+        return `# Profile: ${entry.name}\n${entry.description}\n\n${body.trim().slice(0, 2500)}`
+      } catch {
+        return null
+      }
+    }
+
     const notify = async (input: Parameters<typeof inboxService.notify>[0]) => {
       const notification = await inboxService.notify(input)
       await emitInbox?.(notification)
@@ -201,6 +229,15 @@ export default Plugin.define({
         return moved
       },
       "routing.log": async (input) => ({ decisions: await routingService.list(input.cardID) }),
+      "profiles.list": async (input) => {
+        const found = searchProfiles(profileRegistry, input)
+        return { entries: found.slice(0, 100), total: found.length }
+      },
+      "profiles.stats": async () => {
+        const perCategory: Record<string, number> = {}
+        for (const e of profileRegistry) perCategory[e.category] = (perCategory[e.category] ?? 0) + 1
+        return { total: profileRegistry.length, native: profileRegistry.filter((e) => e.native).length, perCategory }
+      },
     })
 
     emitCronFired = async (event) => {
@@ -246,9 +283,11 @@ export default Plugin.define({
         .slice(-3)
         .map((c) => `${c.author}: ${c.body}`)
         .join("\n")
+      const role = roleText(card.profile ?? "")
       const text = [
         `You are working card "${card.title}" (${input.cardID}), priority p${card.priority}.`,
         card.profile ? `Assigned profile: ${card.profile}.` : null,
+        role,
         card.details ? `Details: ${card.details}` : null,
         comments ? `Recent comments:\n${comments}` : null,
         `When your part is done: kanban_submit_review (send to human review) or kanban_handoff (another profile continues). Stuck: kanban_block.`,
@@ -567,6 +606,25 @@ export default Plugin.define({
       })
 
       editor.add({
+        name: "routing_candidates",
+        description:
+          "Top-16 registry profiles for a card by keyword overlap (Laya stage-2 prefilter). Use with a category to scope; feed the candidates as choice options to core.jev_laya",
+        input: z.object({ cardID: z.string(), category: z.string().optional(), limit: z.number().int().min(1).max(16).optional() }),
+        options: { namespace: "kanban" },
+        execute: async (input) => {
+          const board = await boardService.get()
+          const card = board.cards[input.cardID]
+          if (!card) return { content: `unknown card: ${input.cardID}` }
+          const candidates = topCandidates(card, profileRegistry, {
+            ...(input.category ? { category: input.category } : {}),
+            ...(input.limit ? { limit: input.limit } : {}),
+          })
+          if (!candidates.length) return { content: "no scoring candidates — list profiles with profiles.list or assign manually" }
+          return { content: candidates.map((e) => `${e.id} — ${e.name}: ${e.description}`).join("\n") }
+        },
+      })
+
+      editor.add({
         name: "work",
         description:
           "Start a worker session on a card: resolves its assigned profile, moves it to in_progress, binds the session; exit without submit_review returns the card to ready",
@@ -615,18 +673,6 @@ export default Plugin.define({
         execute: async (input) => {
           await boardService.remove(input)
           return { content: `card ${input.cardID} removed` }
-        },
-      })
-
-      editor.add({
-        name: "work",
-        description:
-          "Start an agent session working a card: moves it to in_progress and binds the session so completion moves the card to done (or blocked on failure)",
-        input: z.object({ cardID: z.string(), prompt: z.string().min(1) }),
-        options: { namespace: "kanban" },
-        execute: async (input) => {
-          const r = await work(input)
-          return { content: `session ${r.sessionID} started for card ${r.cardID}; it will move the card when done` }
         },
       })
     })
