@@ -17,16 +17,16 @@ const card = (lane: string) => ({
 })
 
 describe("transitionLane", () => {
-  it("maps outcomes to lanes", () => {
+  it("maps outcomes to lanes (v2: success without submit is not done; failures go to failed)", () => {
     expect(transitionLane(card("ready"), "started")).toBe("in_progress")
-    expect(transitionLane(card("in_progress"), "succeeded")).toBe("done")
-    expect(transitionLane(card("in_progress"), "failed")).toBe("blocked")
-    expect(transitionLane(card("in_progress"), "interrupted")).toBe("blocked")
+    expect(transitionLane(card("in_progress"), "succeeded")).toBe("ready")
+    expect(transitionLane(card("in_progress"), "failed")).toBe("failed")
+    expect(transitionLane(card("in_progress"), "interrupted")).toBe("failed")
   })
 
   it("returns null when the card is already in the target lane", () => {
     expect(transitionLane(card("in_progress"), "started")).toBeNull()
-    expect(transitionLane(card("done"), "succeeded")).toBeNull()
+    expect(transitionLane(card("ready"), "succeeded")).toBeNull()
   })
 })
 
@@ -62,10 +62,10 @@ describe("outcome application over a board", () => {
     board = createCard(board, { title: "work me", lane: "ready" }, () => "c1").board
     board = createCard(board, { title: "bystander", lane: "backlog" }, () => "c2").board
 
-    const lane = transitionLane(board.cards["c1"]!, "succeeded")
-    expect(lane).toBe("done")
+    const lane = transitionLane(board.cards["c1"]!, "failed")
+    expect(lane).toBe("failed")
     board = moveCard(board, "c1", lane!)
-    expect(board.lanes["done"]).toEqual(["c1"])
+    expect(board.lanes["failed"]).toEqual(["c1"])
     expect(board.lanes["backlog"]).toEqual(["c2"])
   })
 })

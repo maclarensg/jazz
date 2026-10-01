@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
   addComment,
+  assignProfile,
   BoardError,
   createBoard,
   createCard,
@@ -151,6 +152,22 @@ describe("board v2 — assignments", () => {
   it("endAssignment without an open assignment throws", () => {
     const b = createCard(createBoard(), { title: "t" }, () => "c1").board
     expect(() => endAssignment(b, "c1", "exited")).toThrowError(/no open assignment/i)
+  })
+})
+
+describe("board v2 — assignProfile", () => {
+  it("sets the next profile with a routed history entry and optional priority", () => {
+    let b = createCard(createBoard(), { title: "t" }, () => "c1").board
+    b = assignProfile(b, "c1", "qa-core", { actor: "laya", priority: 1 })
+    const card = b.cards["c1"]!
+    expect(card.profile).toBe("qa-core")
+    expect(card.priority).toBe(1)
+    expect(card.history.at(-1)).toMatchObject({ kind: "routed", actor: "laya", detail: "qa-core" })
+    expect(card.assignments).toEqual([]) // assignment opens when a session starts
+  })
+
+  it("throws on unknown card", () => {
+    expect(() => assignProfile(createBoard(), "nope", "x")).toThrowError(BoardError)
   })
 })
 

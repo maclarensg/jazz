@@ -7,11 +7,14 @@ import { createInboxService } from "./inbox-service"
 import type { Notification } from "./inbox"
 import { createCronService, CronError, type CronUpsertInput } from "./cron-service"
 import { catchupPlan, dueJobs, leaseAlive, nextRunISO, type CatchupPolicy, type CronJob, type CronRun } from "./cron"
-import { createLinkRegistry, isTerminalOutcome, OUTCOME_LANES as OUTCOME_LANES_MAP, transitionLane, type SessionOutcome } from "./link"
+import { createLinkRegistry, EXIT_NO_SUBMIT, isTerminalOutcome, OUTCOME_LANES as OUTCOME_LANES_MAP, reviewGuard, transitionLane, type SessionOutcome } from "./link"
+import { createRoutingService } from "./routing-service"
 import { JazzRpc } from "./rpc"
 
 const TICK_MS = 15_000
 const LEASE_MS = 30_000
+/** Max assignment hops per card before it goes to failed (design §6 loop guards). */
+const HANDOFF_CAP = 6
 
 /** Lane → inbox kind. Lanes absent from this map are not notification-worthy. */
 const LANE_NOTIFY_KINDS: Record<string, string> = {
@@ -47,6 +50,7 @@ export default Plugin.define({
     let emitInbox: ((n: Notification) => Promise<void>) | undefined
 
     const inboxService = createInboxService(storage)
+    const routingService = createRoutingService(storage)
     const notify = async (input: Parameters<typeof inboxService.notify>[0]) => {
       const notification = await inboxService.notify(input)
       await emitInbox?.(notification)
@@ -165,6 +169,38 @@ export default Plugin.define({
       "inbox.list": async (input) => inboxService.list(input),
       "inbox.ack": async (input) => inboxService.ack(input.id),
       "inbox.ackAll": async () => inboxService.ackAll(),
+      "card.comment": async (input, { error }) => {
+        try {
+          return await service.comment(input)
+        } catch (e) {
+          if (e instanceof BoardError && e.code === "unknown-card") {
+            return error("unknown_card", e.message, { cardID: input.cardID })
+          }
+          throw e
+        }
+      },
+      "review.decide": async (input, { error }) => {
+        const board = await service.get()
+        const card = board.cards[input.cardID]
+        if (!card) return error("unknown_card", `unknown card: ${input.cardID}`, { cardID: input.cardID })
+        const from = card.lane
+        const decidable = from === "review" || from === "failed"
+        if (!decidable || (input.decision === "accept" && from !== "review")) {
+          return error("not_reviewable", `card ${input.cardID} is in lane ${from}; decide only from review (a/x/r) or failed (x/r)`, {
+            cardID: input.cardID,
+            lane: from,
+          })
+        }
+        const to = input.decision === "accept" ? "done" : input.decision === "cancel" ? "cancelled" : "triage"
+        if (input.note) await service.comment({ cardID: input.cardID, author: "gavin", body: input.note })
+        const moved = await service.move({ cardID: input.cardID, lane: to, actor: "gavin" })
+        await routingService.setOutcome(
+          input.cardID,
+          input.decision === "accept" ? "accepted" : input.decision === "cancel" ? "cancelled" : "requeued",
+        )
+        return moved
+      },
+      "routing.log": async (input) => ({ decisions: await routingService.list(input.cardID) }),
     })
 
     emitCronFired = async (event) => {
@@ -188,14 +224,93 @@ export default Plugin.define({
       const board = await service.get()
       const card = board.cards[input.cardID]
       if (!card) throw new BoardError("unknown-card", `unknown card: ${input.cardID}`)
-      await service.move({ cardID: input.cardID, lane: "in_progress" })
+      if (!reviewGuard(card.lane)) {
+        throw new Error(`card ${input.cardID} is in lane ${card.lane} — review/failed/terminal lanes are Gavin's, not workable`)
+      }
+      if (card.assignments.some((a) => a.endedAt === undefined)) {
+        throw new Error(`card ${input.cardID} already has an open worker session`)
+      }
+      const actor = card.profile ?? "agent"
+      await service.move({ cardID: input.cardID, lane: "in_progress", actor })
       const session = await ctx.session.create({ title: `jazz:${card.title}` })
+      if (card.profile) {
+        try {
+          await ctx.session.switchAgent({ sessionID: session.id, agent: card.profile })
+        } catch {
+          // non-native profile — the role rides in the prompt instead (hybrid personas)
+        }
+      }
       registry.bind(session.id, input.cardID, Date.now())
-      await ctx.session.prompt({
-        sessionID: session.id,
-        text: `You are working card "${card.title}" (${input.cardID}).\n\n${input.prompt}`,
-      })
+      await service.startWork({ cardID: input.cardID, profile: card.profile ?? "worker", sessionID: session.id, actor })
+      const comments = card.comments
+        .slice(-3)
+        .map((c) => `${c.author}: ${c.body}`)
+        .join("\n")
+      const text = [
+        `You are working card "${card.title}" (${input.cardID}), priority p${card.priority}.`,
+        card.profile ? `Assigned profile: ${card.profile}.` : null,
+        card.details ? `Details: ${card.details}` : null,
+        comments ? `Recent comments:\n${comments}` : null,
+        `When your part is done: kanban_submit_review (send to human review) or kanban_handoff (another profile continues). Stuck: kanban_block.`,
+        "",
+        input.prompt,
+      ]
+        .filter(Boolean)
+        .join("\n")
+      await ctx.session.prompt({ sessionID: session.id, text })
       return { sessionID: session.id, cardID: input.cardID }
+    }
+
+    const requireWorkableCard = async (cardID: string) => {
+      const board = await service.get()
+      const card = board.cards[cardID]
+      if (!card) throw new BoardError("unknown-card", `unknown card: ${cardID}`)
+      if (!reviewGuard(card.lane)) {
+        throw new Error(`card ${cardID} is in lane ${card.lane} — not workable from there`)
+      }
+      return card
+    }
+
+    const submitReview = async (input: { cardID: string; summary: string }) => {
+      const card = await requireWorkableCard(input.cardID)
+      if (card.lane !== "in_progress") throw new Error(`card ${input.cardID} is not in_progress (${card.lane})`)
+      const actor = card.profile ?? "worker"
+      if (card.assignments.some((a) => a.endedAt === undefined)) {
+        await service.endWork({ cardID: input.cardID, outcome: "submitted", actor })
+      }
+      await service.comment({ cardID: input.cardID, author: actor, body: input.summary })
+      return service.move({ cardID: input.cardID, lane: "review", actor })
+    }
+
+    const handoff = async (input: { cardID: string; toProfile: string; note?: string; force?: boolean }) => {
+      const card = await requireWorkableCard(input.cardID)
+      if (card.lane !== "in_progress") throw new Error(`card ${input.cardID} is not in_progress (${card.lane})`)
+      const actor = card.profile ?? "worker"
+      if (card.assignments.length >= HANDOFF_CAP) {
+        await service.comment({ cardID: input.cardID, author: "system", body: `Handoff cap (${HANDOFF_CAP}) reached — sending to failed for Gavin.` })
+        const moved = await service.move({ cardID: input.cardID, lane: "failed", actor: "system" })
+        return { moved, reason: "handoff-cap" }
+      }
+      if (input.toProfile === card.profile && !input.force) {
+        throw new Error(`card ${input.cardID} is already assigned to ${card.profile} — pass force:true to re-handoff to the same profile`)
+      }
+      if (card.assignments.some((a) => a.endedAt === undefined)) {
+        await service.endWork({ cardID: input.cardID, outcome: "handoff", actor, detail: `→ ${input.toProfile}` })
+      }
+      if (input.note) await service.comment({ cardID: input.cardID, author: actor, body: input.note })
+      await service.assign({ cardID: input.cardID, profile: input.toProfile, actor })
+      const moved = await service.move({ cardID: input.cardID, lane: "ready", actor })
+      return { moved, reason: "handoff" }
+    }
+
+    const blockCard = async (input: { cardID: string; reason: string }) => {
+      const card = await requireWorkableCard(input.cardID)
+      const actor = card.profile ?? "worker"
+      if (card.assignments.some((a) => a.endedAt === undefined)) {
+        await service.endWork({ cardID: input.cardID, outcome: "exited", actor, detail: input.reason })
+      }
+      await service.comment({ cardID: input.cardID, author: actor, body: `Blocked: ${input.reason}` })
+      return service.move({ cardID: input.cardID, lane: "blocked", actor })
     }
 
     const evController = new AbortController()
@@ -218,7 +333,24 @@ export default Plugin.define({
             continue
           }
           const target = transitionLane(card, outcome)
-          if (target) await service.move({ cardID: link.cardID, lane: target })
+          // v2: a succeeded session that never submitted for review is not a
+          // verdict — record the bail-out, then return the card (or fail it).
+          if (target && outcome === "succeeded") {
+            if (card.assignments.some((a) => a.endedAt === undefined)) {
+              await service.endWork({
+                cardID: link.cardID,
+                outcome: "exited",
+                actor: card.profile ?? "worker",
+                detail: EXIT_NO_SUBMIT,
+              })
+            }
+            await service.comment({
+              cardID: link.cardID,
+              author: "system",
+              body: "Worker session ended without submitting for review.",
+            })
+          }
+          if (target) await service.move({ cardID: link.cardID, lane: target, actor: "system" })
           if (isTerminalOutcome(outcome)) registry.drop(sessionID)
         }
       } catch (e) {
@@ -315,12 +447,134 @@ export default Plugin.define({
 
       editor.add({
         name: "create_card",
-        description: "Create a card on the kanban board (defaults to the backlog lane)",
-        input: z.object({ title: z.string().min(1), lane: z.string().optional() }),
+        description: "Create a card on the kanban board (defaults to the triage lane, where Laya routing assigns a profile)",
+        input: z.object({
+          title: z.string().min(1),
+          lane: z.string().optional(),
+          details: z.string().optional(),
+          priority: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3)]).optional(),
+          source: z.enum(["manual", "cron", "session", "requeue"]).optional(),
+        }),
         options: { namespace: "kanban" },
         execute: async (input) => {
           const card = await boardService.create(input)
           return { content: `card ${card.id} created in lane ${card.lane}` }
+        },
+      })
+
+      editor.add({
+        name: "intake",
+        description: "File new work into the board: creates a card in triage with priority and details, ready for Laya routing",
+        input: z.object({
+          title: z.string().min(1),
+          details: z.string().optional(),
+          priority: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3)]).optional(),
+          source: z.enum(["manual", "cron", "session", "requeue"]).optional(),
+        }),
+        options: { namespace: "kanban" },
+        execute: async (input) => {
+          const card = await boardService.create({ ...input, lane: "triage", source: input.source ?? "session" })
+          return { content: `card ${card.id} filed to triage (priority p${card.priority})` }
+        },
+      })
+
+      editor.add({
+        name: "assign",
+        description:
+          "Assign a profile to a card (Laya routing output). Records the routing decision (stage, probabilities, confidence) and sets priority if given",
+        input: z.object({
+          cardID: z.string(),
+          profile: z.string().min(1),
+          reason: z.string().optional(),
+          priority: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3)]).optional(),
+          stage: z.enum(["domain", "profile"]).optional(),
+          probabilities: z.record(z.string(), z.number()).optional(),
+          confidence: z.number().optional(),
+        }),
+        options: { namespace: "kanban" },
+        execute: async (input) => {
+          await routingService.record({
+            cardID: input.cardID,
+            stage: input.stage ?? "profile",
+            picked: input.profile,
+            ...(input.probabilities ? { probabilities: input.probabilities } : {}),
+            ...(input.confidence !== undefined ? { confidence: input.confidence } : {}),
+            ...(input.reason ? { reason: input.reason } : {}),
+            outcome: "assigned",
+          })
+          const card = await boardService.assign({
+            cardID: input.cardID,
+            profile: input.profile,
+            actor: "laya",
+            ...(input.priority !== undefined ? { priority: input.priority } : {}),
+          })
+          return { content: `card ${card.id} assigned to ${input.profile} (now ${card.lane})` }
+        },
+      })
+
+      editor.add({
+        name: "comment",
+        description: "Add a comment to a card (visible in card detail and to every future worker)",
+        input: z.object({ cardID: z.string(), body: z.string().min(1) }),
+        options: { namespace: "kanban" },
+        execute: async (input) => {
+          const board = await boardService.get()
+          const card = board.cards[input.cardID]
+          if (!card) return { content: `unknown card: ${input.cardID}` }
+          await boardService.comment({ cardID: input.cardID, author: card.profile ?? "agent", body: input.body })
+          return { content: `comment added to ${input.cardID}` }
+        },
+      })
+
+      editor.add({
+        name: "submit_review",
+        description: "Worker: your part of the card is done — submit a summary and send the card to Gavin's review lane",
+        input: z.object({ cardID: z.string(), summary: z.string().min(1) }),
+        options: { namespace: "kanban" },
+        execute: async (input) => {
+          const card = await submitReview(input)
+          return { content: `card ${card.id} submitted for review` }
+        },
+      })
+
+      editor.add({
+        name: "handoff",
+        description:
+          "Worker: hand the card to another profile (e.g. SWE → QA). Card returns to ready with the new profile set; a dispatch pass starts the next session",
+        input: z.object({
+          cardID: z.string(),
+          toProfile: z.string().min(1),
+          note: z.string().optional(),
+          force: z.boolean().optional(),
+        }),
+        options: { namespace: "kanban" },
+        execute: async (input) => {
+          const { moved, reason } = await handoff(input)
+          if (reason === "handoff-cap") return { content: `handoff cap reached — card ${moved.id} moved to failed for Gavin` }
+          return { content: `card ${moved.id} handed off to ${input.toProfile} (now ${moved.lane})` }
+        },
+      })
+
+      editor.add({
+        name: "block",
+        description: "Worker: flag the card as blocked with a reason (needs input/dependency) — it waits in blocked for unblocking",
+        input: z.object({ cardID: z.string(), reason: z.string().min(1) }),
+        options: { namespace: "kanban" },
+        execute: async (input) => {
+          const card = await blockCard(input)
+          return { content: `card ${card.id} blocked: ${input.reason}` }
+        },
+      })
+
+      editor.add({
+        name: "work",
+        description:
+          "Start a worker session on a card: resolves its assigned profile, moves it to in_progress, binds the session; exit without submit_review returns the card to ready",
+        input: z.object({ cardID: z.string(), prompt: z.string().min(1) }),
+        options: { namespace: "kanban" },
+        execute: async (input) => {
+          const r = await work(input)
+          return { content: `session ${r.sessionID} started for card ${r.cardID}; it will move the card when done` }
         },
       })
 

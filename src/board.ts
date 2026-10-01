@@ -290,6 +290,26 @@ export function endAssignment(
 }
 
 /**
+ * Set the next profile for a card (triage assignment or handoff target).
+ * Does NOT open an assignment — that happens when a worker session starts
+ * (kanban_work). Records a `routed` history entry; optionally retunes priority.
+ */
+export function assignProfile(
+  board: BoardState,
+  cardID: string,
+  profile: string,
+  opts: { actor?: string; priority?: Priority } = {},
+): BoardState {
+  const card = requireCard(board, cardID)
+  const next: Card = {
+    ...card,
+    profile,
+    ...(opts.priority !== undefined ? { priority: opts.priority } : {}),
+  }
+  return withHistory(board, next, { kind: "routed", actor: opts.actor ?? "system", detail: profile })
+}
+
+/**
  * Upgrade a persisted board to the current shape:
  * - add missing target lanes in canonical order (custom lanes keep their relative order, appended last)
  * - backfill v2 card fields (priority, source, assignments, comments, history)

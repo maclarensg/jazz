@@ -30,7 +30,7 @@ describe("link: card-bound sessions", () => {
     await expect(server.jazz["card.work"]({ cardID: "no-such", prompt: "x" })).rejects.toThrow()
   })
 
-  it("kanban_work moves a card to in_progress, then done on session success", async () => {
+  it("kanban_work moves a card to in_progress; exit without submit returns it to ready (v2)", async () => {
     const title = `nonce-${randomUUID().slice(0, 8)}`
     const card = await server.jazz["card.create"]({ title, lane: "ready" })
 
@@ -46,8 +46,13 @@ describe("link: card-bound sessions", () => {
     expect(link.link).not.toBeNull()
     expect(link.link?.cardID).toBe(card.id)
 
-    // session completes -> card moves to done, link dropped
-    expect(await waitForLane(card.id, "done", 120_000)).toBe(true)
+    // session completes without submit_review → NOT done: card returns to
+    // ready with a bail-out comment; link dropped (worker exit ≠ verdict)
+    expect(await waitForLane(card.id, "ready", 120_000)).toBe(true)
+    const board = await server.jazz["board.get"]({})
+    const after = board.cards[card.id]!
+    expect(after.comments.some((c: { body: string }) => c.body.includes("without submitting"))).toBe(true)
+    expect(after.assignments.every((a: { endedAt?: string }) => a.endedAt)).toBe(true)
     const linkAfter = await server.jazz["link.get"]({ sessionID: started.sessionID })
     expect(linkAfter.link).toBeNull()
   })

@@ -203,6 +203,43 @@ export const JazzRpc = Rpc.define({
       output: z.object({ unread: z.number().int() }),
       errors: {},
     },
+    "card.comment": {
+      input: z.object({ cardID: z.string(), author: z.string().min(1), body: z.string().min(1) }),
+      output: cardSchema,
+      errors: {
+        unknown_card: z.object({ cardID: z.string() }),
+      },
+    },
+    "review.decide": {
+      input: z.object({
+        cardID: z.string(),
+        decision: z.enum(["accept", "cancel", "requeue"]),
+        note: z.string().optional(),
+      }),
+      output: cardSchema,
+      errors: {
+        unknown_card: z.object({ cardID: z.string() }),
+        not_reviewable: z.object({ cardID: z.string(), lane: z.string() }),
+      },
+    },
+    "routing.log": {
+      input: z.object({ cardID: z.string().optional() }),
+      output: z.object({
+        decisions: z.array(
+          z.object({
+            cardID: z.string(),
+            stage: z.enum(["domain", "profile"]),
+            picked: z.string(),
+            probabilities: z.record(z.string(), z.number()).optional(),
+            confidence: z.number().optional(),
+            reason: z.string().optional(),
+            ts: z.string(),
+            outcome: z.enum(["assigned", "requeued", "accepted", "cancelled"]).optional(),
+          }),
+        ),
+      }),
+      errors: {},
+    },
   },
   events: {
     "card.moved": {
