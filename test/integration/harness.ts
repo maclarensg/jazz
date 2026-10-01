@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process"
 import { mkdtemp } from "node:fs/promises"
+import { readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { createServer } from "node:net"
 import path from "node:path"
@@ -60,6 +61,16 @@ export async function startJazzServer(opts: JazzServerOptions = {}): Promise<Jaz
   const dataDir = opts.dataDir ?? (await mkdtemp(path.join(tmpdir(), "jazz-data-")))
   const cwd = await mkdtemp(path.join(tmpdir(), "jazz-it-"))
   const port = await freePort()
+
+  // serve has no --model flag; when the heavy-model pool is dry, patch the
+  // staged config instead: JAZZ_TEST_MODEL=zai-coding-plan/glm-5.3-flash
+  if (process.env.JAZZ_TEST_MODEL) {
+    const cfgPath = path.join(xdgConfig, "opencode", "config", "opencode.json")
+    const cfg = JSON.parse(readFileSync(cfgPath, "utf8")) as { model?: string }
+    cfg.model = process.env.JAZZ_TEST_MODEL
+    writeFileSync(cfgPath, JSON.stringify(cfg, null, 2))
+    console.error(`[harness] test model override: ${cfg.model}`)
+  }
 
   const child = spawn(bin, ["serve", "--hostname", "127.0.0.1", "--port", String(port)], {
     cwd,

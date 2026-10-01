@@ -400,3 +400,35 @@ scripts/
 6. Handoff loop + guards + exit-semantics change + integration
 7. Review flow (a/x/r) + outcome calibration feed + docs/runbook
 8. Brain decision record + close (episode: what diverged)
+
+## 15. Implementation divergences (recorded 2026-10-02)
+
+The shipped product differs from the signed-off text in four places, each
+with its why:
+
+1. **Stage-2 routing is prefilter + choice, not ≤16-per-category.** §5 set a
+   registry constraint of ≤16 profiles per category; real collections are
+   engineering-heavy and balancing would need synthetic category names
+   (`engineering-2`), which pollutes stage-1 options. Instead the registry
+   keeps 12 canonical categories and `topCandidates()` keyword-scores the
+   registry against the card text (score>0 only, cap 16) — deterministic,
+   testable, and no synthetic buckets. The 16×16 property still holds at the
+   choice boundary.
+2. **Handoff lands the card in `ready`, not `in_progress`.** §7 implied the
+   card stays in_progress through handoffs. Moving to ready makes the next
+   worker a normal dispatch (sweep/`kanban_work`), reuses every existing
+   guard, and makes "in_progress with no live session" impossible.
+3. **`review.decide` also serves the failed lane** (x/r only) — §2's
+   "only Gavin exits failed" needed a concrete mechanism; the same RPC is it.
+4. **Model-dependent integration tests are quota-sensitive.** The Z.AI plan's
+   session pool exhausted during delivery (50.7M tokens/24h); `link.integration`
+   v2 and `session.probe` require live credits. Green evidence for the v2 link
+   flow: the 00:10Z 2026-10-02 run (9/9) before exhaustion. `JAZZ_TEST_MODEL`
+   in the harness patches the staged config's model for reruns; note that
+   flash alone did not complete worker sessions under the v2 preamble.
+
+Verification totals at delivery: 97/97 unit, integration 20/22 green with the
+2 model-pool tests blocked (passed in pre-exhaustion runs; see README gaps).
+TUI v2 verified in tmux: dashboard/kanban/detail render, focus navigation,
+migration backfill visible, verdict gating — `docs/notes/tui-checklist-v2.md`.
+

@@ -36,7 +36,10 @@ describe("link: card-bound sessions", () => {
 
     const started = await server.jazz["card.work"]({
       cardID: card.id,
-      prompt: "Reply with exactly: ok",
+      // The work preamble mentions kanban tools; weaker models sometimes try
+      // to call them headlessly. This test exercises the exit-without-submit
+      // path — the reply must be a bare completion.
+      prompt: "Ignore any earlier instructions about kanban tools. Do not call any tools. Reply with exactly: ok",
     })
     expect(started.sessionID).toBeTruthy()
 
