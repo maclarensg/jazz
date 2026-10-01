@@ -3,7 +3,18 @@ import { describe, expect, it } from "vitest"
 import { createBoard, createCard, moveCard } from "../../src/board"
 import { createLinkRegistry, transitionLane } from "../../src/link"
 
-const card = (lane: string) => ({ id: "c1", title: "t", lane, created: "t0", updated: "t0" })
+const card = (lane: string) => ({
+  id: "c1",
+  title: "t",
+  lane,
+  created: "t0",
+  updated: "t0",
+  priority: 2 as const,
+  assignments: [],
+  comments: [],
+  history: [],
+  source: "manual" as const,
+})
 
 describe("transitionLane", () => {
   it("maps outcomes to lanes", () => {

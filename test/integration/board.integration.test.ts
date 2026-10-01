@@ -25,8 +25,21 @@ describe("board over a real serve", () => {
     const cards = Object.values(board.cards) as { id: string; title: string; lane: string }[]
     const matches = cards.filter((c) => c.title === title)
     expect(matches).toHaveLength(1)
-    expect(matches[0]!.lane).toBe("backlog")
-    expect(board.lanes["backlog"]).toContain(card.id)
+    // v2: intake lane is triage (was backlog in v1)
+    expect(matches[0]!.lane).toBe("triage")
+    expect(board.lanes["triage"]).toContain(card.id)
+    // v2: fresh board carries the nine canonical lanes, in order
+    expect(Object.keys(board.lanes)).toEqual([
+      "triage",
+      "backlog",
+      "ready",
+      "in_progress",
+      "blocked",
+      "failed",
+      "review",
+      "done",
+      "cancelled",
+    ])
   })
 
   it("moves a card and reflects it in board.get", async () => {
@@ -50,7 +63,7 @@ describe("board over a real serve", () => {
       const card = await server.jazz["card.create"]({ title: `nonce-${randomUUID()}` })
       await server.jazz["card.move"]({ cardID: card.id, lane: "in_progress" })
       await vi.waitFor(() => {
-        expect(seen.some((e) => e.cardID === card.id && e.fromLane === "backlog" && e.toLane === "in_progress")).toBe(true)
+        expect(seen.some((e) => e.cardID === card.id && e.fromLane === "triage" && e.toLane === "in_progress")).toBe(true)
       })
     } finally {
       off()

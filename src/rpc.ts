@@ -5,6 +5,48 @@ export const cardSchema = z.object({
   id: z.string(),
   title: z.string(),
   lane: z.string(),
+  details: z.string().optional(),
+  priority: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3)]),
+  profile: z.string().optional(),
+  assignments: z.array(
+    z.object({
+      profile: z.string(),
+      sessionID: z.string().optional(),
+      startedAt: z.string(),
+      endedAt: z.string().optional(),
+      outcome: z.enum(["handoff", "submitted", "exited", "failed"]).optional(),
+    }),
+  ),
+  comments: z.array(
+    z.object({
+      id: z.string(),
+      author: z.string(),
+      body: z.string(),
+      ts: z.string(),
+    }),
+  ),
+  history: z.array(
+    z.object({
+      ts: z.string(),
+      kind: z.enum([
+        "created",
+        "moved",
+        "assigned",
+        "handoff",
+        "comment",
+        "review",
+        "routed",
+        "cron",
+        "exit",
+        "note",
+      ]),
+      actor: z.string(),
+      from: z.string().optional(),
+      to: z.string().optional(),
+      detail: z.string().optional(),
+    }),
+  ),
+  source: z.enum(["manual", "cron", "session", "requeue"]),
   created: z.string(),
   updated: z.string(),
 })
@@ -34,7 +76,13 @@ export const JazzRpc = Rpc.define({
       errors: {},
     },
     "card.create": {
-      input: z.object({ title: z.string().min(1), lane: z.string().optional() }),
+      input: z.object({
+        title: z.string().min(1),
+        lane: z.string().optional(),
+        details: z.string().optional(),
+        priority: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3)]).optional(),
+        source: z.enum(["manual", "cron", "session", "requeue"]).optional(),
+      }),
       output: cardSchema,
       errors: {
         unknown_lane: z.object({ lane: z.string() }),

@@ -11,7 +11,14 @@ import { loadBoard, saveBoard, type JsonStorage } from "./storage"
 
 export interface BoardService {
   get(): Promise<BoardState>
-  create(input: { title: string; lane?: string }): Promise<Card>
+  create(input: {
+    title: string
+    lane?: string
+    details?: string
+    priority?: Card["priority"]
+    source?: Card["source"]
+    actor?: string
+  }): Promise<Card>
   move(input: { cardID: string; lane: string; index?: number }): Promise<Card>
   remove(input: { cardID: string }): Promise<void>
 }
@@ -47,7 +54,7 @@ export function createBoardService(storage: JsonStorage, opts: BoardServiceOptio
         const board = await loadBoard(storage, opts.lanes)
         const { board: next, card } = createCard(board, input, opts.idgen)
         await saveBoard(storage, next)
-        const from = input.lane ?? "backlog"
+        const from = input.lane ?? "triage"
         await opts.onMoved?.(card, from)
         return card
       })

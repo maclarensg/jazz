@@ -1,5 +1,5 @@
 import type { Plugin } from "@opencode/plugin"
-import { createBoard, type BoardState, type Card } from "./board"
+import { createBoard, migrateBoard, DEFAULT_LANES, type BoardState, type Card } from "./board"
 
 export class StorageError extends Error {
   constructor(message: string) {
@@ -50,6 +50,15 @@ function validateCard(value: unknown, id: string): Card {
     if (typeof value[field] !== "string") throw new StorageError(`card ${id} missing string field ${field}`)
   }
   if (typeof value.id !== "string" || value.id !== id) throw new StorageError(`card ${id} has bad id`)
+  // v2 fields are optional on disk (v1 docs predate them); when present they must be sane.
+  if (value.priority !== undefined && (typeof value.priority !== "number" || ![0, 1, 2, 3].includes(value.priority))) {
+    throw new StorageError(`card ${id} has bad priority`)
+  }
+  for (const field of ["assignments", "comments", "history"] as const) {
+    if (value[field] !== undefined && !Array.isArray(value[field])) {
+      throw new StorageError(`card ${id} field ${field} is not an array`)
+    }
+  }
   return value as unknown as Card
 }
 
@@ -80,7 +89,8 @@ export const BOARD_KEY = "board/state"
 export async function loadBoard(storage: JsonStorage, defaultLanes?: readonly string[]): Promise<BoardState> {
   const value = await readJson(storage, BOARD_KEY)
   if (value === undefined) return createBoard(defaultLanes)
-  return validateBoard(value)
+  // Persisted docs may predate v2 (5 lanes, bare cards) — migrate to current shape on load.
+  return migrateBoard(validateBoard(value), defaultLanes ?? DEFAULT_LANES)
 }
 
 export async function saveBoard(storage: JsonStorage, board: BoardState): Promise<void> {

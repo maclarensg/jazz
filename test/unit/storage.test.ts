@@ -25,6 +25,39 @@ describe("storage", () => {
     expect(Object.keys(loaded.lanes)).toEqual([...DEFAULT_LANES])
   })
 
+  it("loadBoard migrates a persisted v1 board to v2 lanes and card shape", async () => {
+    const storage = createMemoryStorage()
+    const v1 = {
+      cards: {
+        a: {
+          id: "a",
+          title: "old work",
+          lane: "backlog",
+          created: "2026-09-28T10:00:00.000Z",
+          updated: "2026-09-29T11:00:00.000Z",
+        },
+      },
+      lanes: { backlog: ["a"], ready: [], in_progress: [], blocked: [], done: [] },
+    }
+    await storage.set("board/state", v1)
+    const board = await loadBoard(storage)
+    expect(Object.keys(board.lanes)).toEqual([
+      "triage",
+      "backlog",
+      "ready",
+      "in_progress",
+      "blocked",
+      "failed",
+      "review",
+      "done",
+      "cancelled",
+    ])
+    expect(board.cards["a"]!.priority).toBe(2)
+    expect(board.cards["a"]!.history).toEqual([
+      expect.objectContaining({ kind: "created", ts: "2026-09-28T10:00:00.000Z" }),
+    ])
+  })
+
   it("returns undefined from readJson for missing keys", async () => {
     const storage = createMemoryStorage()
     expect(await readJson(storage, "board/state")).toBeUndefined()
