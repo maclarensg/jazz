@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto"
 import { z } from "zod"
 import { asJsonStorage } from "./storage"
 import { BoardError, createBoardService } from "./service"
+import { createInboxService } from "./inbox-service"
+import type { Notification } from "./inbox"
 import { createCronService, CronError, type CronUpsertInput } from "./cron-service"
 import { catchupPlan, dueJobs, leaseAlive, nextRunISO, type CatchupPolicy, type CronJob, type CronRun } from "./cron"
 import { createLinkRegistry, isTerminalOutcome, OUTCOME_LANES as OUTCOME_LANES_MAP, transitionLane, type SessionOutcome } from "./link"
@@ -10,6 +12,16 @@ import { JazzRpc } from "./rpc"
 
 const TICK_MS = 15_000
 const LEASE_MS = 30_000
+
+/** Lane → inbox kind. Lanes absent from this map are not notification-worthy. */
+const LANE_NOTIFY_KINDS: Record<string, string> = {
+  review: "entered_review",
+  failed: "failed",
+  blocked: "blocked",
+  done: "done",
+  cancelled: "cancelled",
+  triage: "requeued",
+}
 
 /**
  * opencode-jazz server plugin.
@@ -32,10 +44,29 @@ export default Plugin.define({
     let emitMoved: ((e: { cardID: string; title: string; fromLane: string; toLane: string }) => Promise<void>) | undefined
     let emitCronFired: ((e: { jobID: string; jobName: string; sessionID: string }) => Promise<void>) | undefined
     let emitCronFailed: ((e: { jobID: string; jobName: string; error: string }) => Promise<void>) | undefined
+    let emitInbox: ((n: Notification) => Promise<void>) | undefined
+
+    const inboxService = createInboxService(storage)
+    const notify = async (input: Parameters<typeof inboxService.notify>[0]) => {
+      const notification = await inboxService.notify(input)
+      await emitInbox?.(notification)
+    }
 
     const service = createBoardService(storage, {
       ...(lanes ? { lanes } : {}),
-      onMoved: (card, fromLane) => emitMoved?.({ cardID: card.id, title: card.title, fromLane, toLane: card.lane }),
+      onMoved: async (card, fromLane) => {
+        await emitMoved?.({ cardID: card.id, title: card.title, fromLane, toLane: card.lane })
+        if (fromLane === card.lane) return // creates land without a lane change — not a move
+        const kind = LANE_NOTIFY_KINDS[card.lane]
+        if (kind) {
+          await notify({
+            source: "card",
+            kind,
+            message: `${card.title} (${card.id}): ${fromLane} → ${card.lane}`,
+            cardID: card.id,
+          })
+        }
+      },
     })
 
     const registration = await ctx.rpc.register(JazzRpc, {
@@ -131,6 +162,9 @@ export default Plugin.define({
         }))
         return { links }
       },
+      "inbox.list": async (input) => inboxService.list(input),
+      "inbox.ack": async (input) => inboxService.ack(input.id),
+      "inbox.ackAll": async () => inboxService.ackAll(),
     })
 
     emitCronFired = async (event) => {
@@ -141,6 +175,9 @@ export default Plugin.define({
     }
     emitMoved = async (event) => {
       await registration.events.emit("card.moved", event)
+    }
+    emitInbox = async (notification) => {
+      await registration.events.emit("inbox.notification", notification)
     }
 
     // ---- link (Task 4): the ONLY bridge between board and sessions.
@@ -213,10 +250,22 @@ export default Plugin.define({
         await ctx.session.prompt({ sessionID: session.id, text: job.prompt })
         run.sessionID = session.id
         await emitCronFired?.({ jobID: job.id, jobName: job.name, sessionID: session.id })
+        await notify({
+          source: "cron",
+          kind: missed ? "caught_up" : "fired",
+          message: `cron ${job.name} (${job.id}) ${missed ? "caught up" : "fired"} → session ${session.id}`,
+          jobID: job.id,
+        })
       } catch (e) {
         run.status = "error"
         run.error = e instanceof Error ? e.message : String(e)
         await emitCronFailed?.({ jobID: job.id, jobName: job.name, error: run.error })
+        await notify({
+          source: "cron",
+          kind: "failed",
+          message: `cron ${job.name} (${job.id}) failed: ${run.error}`,
+          jobID: job.id,
+        })
       }
       await cronService.appendRun(run)
       return run

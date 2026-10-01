@@ -1,6 +1,17 @@
 import { Rpc } from "@opencode/plugin/rpc"
 import { z } from "zod"
 
+export const notificationSchema = z.object({
+  id: z.string(),
+  ts: z.string(),
+  source: z.enum(["card", "cron"]),
+  kind: z.string(),
+  message: z.string(),
+  cardID: z.string().optional(),
+  jobID: z.string().optional(),
+  read: z.boolean(),
+})
+
 export const cardSchema = z.object({
   id: z.string(),
   title: z.string(),
@@ -177,6 +188,21 @@ export const JazzRpc = Rpc.define({
       }),
       errors: {},
     },
+    "inbox.list": {
+      input: z.object({ unreadOnly: z.boolean().optional() }),
+      output: z.object({ notifications: z.array(notificationSchema), unread: z.number().int() }),
+      errors: {},
+    },
+    "inbox.ack": {
+      input: z.object({ id: z.string().min(1) }),
+      output: z.object({ unread: z.number().int() }),
+      errors: {},
+    },
+    "inbox.ackAll": {
+      input: z.object({}),
+      output: z.object({ unread: z.number().int() }),
+      errors: {},
+    },
   },
   events: {
     "card.moved": {
@@ -200,6 +226,9 @@ export const JazzRpc = Rpc.define({
         jobName: z.string(),
         error: z.string(),
       }),
+    },
+    "inbox.notification": {
+      schema: notificationSchema,
     },
   },
 })
