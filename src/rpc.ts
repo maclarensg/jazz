@@ -215,6 +215,32 @@ export const JazzRpc = Rpc.define({
       output: z.object({ unread: z.number().int() }),
       errors: {},
     },
+    "inbox.clear": {
+      input: z.object({ id: z.string().min(1) }),
+      output: z.object({ cleared: z.number().int(), unread: z.number().int() }),
+      errors: {},
+    },
+    "inbox.clearAll": {
+      input: z.object({}),
+      output: z.object({ cleared: z.number().int(), unread: z.number().int() }),
+      errors: {},
+    },
+    "board.archiveLane": {
+      input: z.object({ lane: z.string().min(1), actor: z.string().optional() }),
+      output: z.object({ archived: z.number().int(), archiveTotal: z.number().int() }),
+      errors: {
+        unknown_lane: z.object({ lane: z.string() }),
+        not_archivable: z.object({ lane: z.string() }),
+      },
+    },
+    "archive.get": {
+      input: z.object({}).strict(),
+      output: z.object({
+        total: z.number().int(),
+        cards: z.array(cardSchema.extend({ archivedAt: z.string() })),
+      }),
+      errors: {},
+    },
     "card.comment": {
       input: z.object({ cardID: z.string(), author: z.string().min(1), body: z.string().min(1) }),
       output: cardSchema,

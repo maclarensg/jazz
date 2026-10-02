@@ -93,3 +93,33 @@ describe("storage", () => {
     expect(await storage.get("k")).toEqual({ a: 1 })
   })
 })
+import { archiveLane, createArchive, mergeArchive, moveCard, createCard as mk } from "../../src/board"
+import { loadArchive, saveArchive } from "../../src/storage"
+
+describe("archive storage", () => {
+  const docWithOne = async () => {
+    let board = createBoard()
+    const r = mk(board, { title: "nonce-arc" }, () => "a1")
+    board = moveCard(r.board, "a1", "done")
+    const { board: next, archived } = archiveLane(board, "done", { actor: "gavin" })
+    return { board: next, archived, doc: mergeArchive(createArchive(), archived, "2026-10-02T00:00:00.000Z") }
+  }
+
+  it("round-trips the archive doc through ctx.storage", async () => {
+    const storage = createMemoryStorage()
+    const { doc } = await docWithOne()
+    await saveArchive(storage, doc)
+    expect(await loadArchive(storage)).toEqual(doc)
+  })
+
+  it("returns an empty archive when the key is missing", async () => {
+    const storage = createMemoryStorage()
+    expect(await loadArchive(storage)).toEqual(createArchive())
+  })
+
+  it("a corrupted archive loads as empty — it must never brick the board", async () => {
+    const storage = createMemoryStorage()
+    await storage.set("board/archive", { nope: true })
+    expect(await loadArchive(storage)).toEqual(createArchive())
+  })
+})

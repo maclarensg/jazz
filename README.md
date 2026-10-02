@@ -58,14 +58,21 @@ Scripts/clients get the `jazz` RPC over HTTP (`{"input": ...}` body shape):
 
 ```
 board.get · card.create/move/remove/comment · card.work · link.get/list
-inbox.list/ack/ackAll · review.decide (accept|cancel|requeue) · routing.log
+inbox.list/ack/ackAll/clear/clearAll · review.decide (accept|cancel|requeue) · routing.log
+board.archiveLane (done|cancelled → archive store) · archive.get
 profiles.list/stats · cron.upsert/list/remove/runNow/runs
 ```
 
 TUI (`ctrl+j` or `/board`): 3-pane dashboard; `i` inbox, `c` cron, `k` kanban
-full views; card detail with history/comments/assignments; on review (or
-failed) lanes the card detail carries the verdict keys (a accept · x cancel ·
-r requeue) and `C` comments.
+full views; kanban navigation is arrow-only (`←`/`→` lanes, `↑`/`↓` cards,
+selected lane highlighted); `H`/`L` move the selected card between lanes,
+`A` archives every card in the selected done/cancelled lane into the archive
+store (`archive.get`; count shown in the kanban title bar), `n` new, `x`
+remove; inbox `c` clears the selected notification and `C` clears all
+(removal from the list — `m`/`M` still mark read without deleting); card
+detail with history/comments/assignments; on review (or failed) lanes the card
+detail carries the verdict keys (a accept · x cancel · r requeue) and `C`
+comments.
 
 ## Profile registry
 
@@ -102,7 +109,10 @@ JAZZ_TEST_MODEL=zai-coding-plan/glm-5.3-flash npm run test:integration  # model 
    flash alone did not complete worker sessions (preamble-heavy prompts).
 2. **TUI interactive pass** — dashboard/kanban/detail/verdict-gating verified
    in tmux; inbox ack keys and cron e/r/N keys not driven (RPC paths
-   integration-verified). See `docs/notes/tui-checklist-v2.md`.
+   integration-verified). See `docs/notes/tui-checklist-v2.md` and
+   [`docs/notes/tui-checklist-v3.md`](docs/notes/tui-checklist-v3.md) (v3:
+   arrow-only navigation, full-screen board, lane-title fix, uppercase-bind
+   fix, scratch-board technique).
 3. **Native personas** — soul roles flagged `native: true`; imported profiles
    are prompt-composed. Materializing curated imports as `.opencode/agent/`
    definitions is future work (hybrid personas, design §5).
@@ -123,8 +133,8 @@ link.get · link.list
 
 Events: `jazz.card.moved`, `jazz.cron.fired`, `jazz.cron.failed`.
 
-The TUI: `ctrl+j` or `/board` — lane columns, h/l move, n new, x remove,
-tab to the cron section, r run-now.
+The TUI: `ctrl+j` or `/board` — lane columns, `←`/`→` lanes, `↑`/`↓` cards,
+`H`/`L` move card, n new, x remove, c cron view, r run-now.
 
 ## Cron jobs
 

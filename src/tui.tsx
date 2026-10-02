@@ -12,6 +12,10 @@ import { JazzRpc } from "./rpc"
  * i/c/k full views and a card detail overlay carrying the review verdict keys
  * (a accept · x cancel · r requeue). One keymap layer owned by the mounted
  * view component — the Keymap Provider doesn't exist in bare plugin setup.
+ *
+ * Kanban navigation is arrow-only and selection-only: ←/→ lanes, ↑/↓ cards.
+ * Moving a card is an explicit shift key (H/L) — navigation can never mutate
+ * a board (see tui-checklist-v2.md for the race that motivated this).
  */
 type View = "dash" | "inbox" | "cron" | "kanban" | "detail"
 
@@ -59,6 +63,7 @@ export default Plugin.define({
       const [notifications, setNotifications] = createSignal<Notification[]>([])
       const [unread, setUnread] = createSignal(0)
       const [registryTotal, setRegistryTotal] = createSignal(0)
+      const [archiveTotal, setArchiveTotal] = createSignal(0)
       const [sel, setSel] = createSignal({ lane: 0, card: 0 })
       const [inboxSel, setInboxSel] = createSignal(0)
       const [jobSel, setJobSel] = createSignal(0)
@@ -83,17 +88,19 @@ export default Plugin.define({
 
       const refresh = async () => {
         try {
-          const [b, cr, ib, st] = await Promise.all([
+          const [b, cr, ib, st, ar] = await Promise.all([
             jazz["board.get"]({}),
             jazz["cron.list"]({}),
             jazz["inbox.list"]({}),
             jazz["profiles.stats"]({}),
+            jazz["archive.get"]({}),
           ])
           setBoard(b)
           setJobs(cr.jobs)
           setNotifications(ib.notifications as Notification[])
           setUnread(ib.unread)
           setRegistryTotal(st.total)
+          setArchiveTotal(ar.total)
         } catch (e) {
           if (toastless()) {
             setToastless(false)
@@ -118,6 +125,22 @@ export default Plugin.define({
         await jazz["card.move"]({ cardID: card.id, lane: lanes[to]! })
         setSel({ lane: to, card: 0 })
         await refresh()
+      }
+
+      /** Arrow navigation is selection-only: no RPC, no mutation. */
+      const selectLane = (dir: -1 | 1) => {
+        const lanes = laneNames()
+        if (!lanes.length) return
+        const s = sel()
+        const lane = Math.min(Math.max(s.lane + dir, 0), lanes.length - 1)
+        const count = cardsIn(lanes[lane] ?? "").length
+        setSel({ lane, card: Math.min(s.card, Math.max(0, count - 1)) })
+      }
+
+      const selectCard = (dir: -1 | 1) => {
+        const count = cardsIn(laneNames()[sel().lane] ?? "").length
+        if (!count) return
+        setSel((s) => ({ ...s, card: Math.min(Math.max(s.card + dir, 0), count - 1) }))
       }
 
       const newCard = async () => {
@@ -184,6 +207,52 @@ export default Plugin.define({
         await refresh()
       }
 
+      /** Clear = remove from the list entirely (distinct from ack's mark-read). */
+      const clearSelected = async () => {
+        const list = unreadFirst()
+        const n = list[inboxSel()]
+        if (!n) return
+        await jazz["inbox.clear"]({ id: n.id })
+        await refresh()
+        const nextLen = Math.max(0, unreadFirst().length - 1)
+        setInboxSel((v) => Math.min(v, nextLen))
+        ctx.ui.toast.show({ message: `cleared: ${n.kind}`, variant: "success" })
+      }
+
+      const clearAllInbox = async () => {
+        const list = unreadFirst()
+        if (!list.length) return
+        const yes = await ctx.ui.dialog.confirm({ title: "Clear inbox", message: `Remove all ${list.length} notifications from the list?` })
+        if (!yes) return
+        const r = await jazz["inbox.clearAll"]({})
+        setUnread(r.unread)
+        setInboxSel(0)
+        await refresh()
+        ctx.ui.toast.show({ message: `cleared ${r.cleared} notifications`, variant: "success" })
+      }
+
+      /** Stash every card in the selected done/cancelled lane into the archive. */
+      const archiveSelectedLane = async () => {
+        const lane = laneNames()[sel().lane]
+        if (!lane) return
+        const count = cardsIn(lane).length
+        if (count === 0) {
+          ctx.ui.toast.show({ message: `${lane} is already empty`, variant: "error" })
+          return
+        }
+        const yes = await ctx.ui.dialog.confirm({ title: "Archive lane", message: `Move all ${count} cards from ${lane} to the archive?` })
+        if (!yes) return
+        try {
+          const r = await jazz["board.archiveLane"]({ lane, actor: "gavin" })
+          setArchiveTotal(r.archiveTotal)
+          setSel((s) => ({ ...s, card: 0 }))
+          await refresh()
+          ctx.ui.toast.show({ message: `archived ${r.archived} cards (archive: ${r.archiveTotal})`, variant: "success" })
+        } catch (e) {
+          ctx.ui.toast.show({ message: `archive failed: ${e instanceof Error ? e.message : String(e)}`, variant: "error" })
+        }
+      }
+
       const runSelectedJob = async () => {
         const job = jobs()[jobSel()]
         if (!job) return
@@ -228,34 +297,41 @@ export default Plugin.define({
           mode: "global",
           priority: 10,
           commands: [
-            // view switching
+            // view switching (c is cron everywhere EXCEPT inbox, where it clears)
             { id: "jazz.inbox", title: "Jazz inbox", group: "Jazz", bind: "i", run: () => { setInboxSel(0); setView("inbox") } },
-            { id: "jazz.cron", title: "Jazz cron", group: "Jazz", bind: "c", enabled: () => view() !== "detail", run: () => { setJobSel(0); setView("cron") } },
+            { id: "jazz.cron", title: "Jazz cron", group: "Jazz", bind: "c", enabled: () => view() !== "detail" && view() !== "inbox", run: () => { setJobSel(0); setView("cron") } },
             { id: "jazz.kanban", title: "Jazz kanban", group: "Jazz", bind: "k", enabled: () => view() !== "detail", run: () => setView("kanban") },
             { id: "jazz.dash", title: "Jazz dashboard", group: "Jazz", bind: "d", enabled: () => view() !== "dash", run: () => setView("dash") },
             { id: "jazz.back", title: "Jazz back/dashboard", group: "Jazz", bind: "escape", enabled: () => view() !== "dash", run: () => setView("dash") },
             { id: "jazz.home", title: "Close jazz", group: "Jazz", bind: "q", run: () => ctx.ui.router.navigate({ type: "home" }) },
             { id: "jazz.refresh", title: "Refresh jazz", group: "Jazz", bind: "f5", run: () => void refresh() },
-            // kanban view
-            { id: "jazz.left", title: "Move card left", group: "Jazz", bind: "h", enabled: () => view() === "kanban", run: () => void moveSelected(-1) },
-            { id: "jazz.right", title: "Move card right", group: "Jazz", bind: "l", enabled: () => view() === "kanban", run: () => void moveSelected(1) },
-            { id: "jazz.cardnext", title: "Next card", group: "Jazz", bind: "j", enabled: () => view() === "kanban" || view() === "inbox" || view() === "cron", run: () => { if (view() === "kanban") setSel((s) => ({ ...s, card: s.card + 1 })); else if (view() === "inbox") setInboxSel((v) => v + 1); else setJobSel((v) => v + 1) } },
-            { id: "jazz.cardprev", title: "Previous item", group: "Jazz", bind: "K", enabled: () => view() === "kanban" || view() === "inbox" || view() === "cron", run: () => { if (view() === "kanban") setSel((s) => ({ ...s, card: Math.max(0, s.card - 1) })); else if (view() === "inbox") setInboxSel((v) => Math.max(0, v - 1)); else setJobSel((v) => Math.max(0, v - 1)) } },
+            // kanban view — arrows navigate selection only (no mutation)
+            { id: "jazz.laneleft", title: "Select lane left", group: "Jazz", bind: "left", enabled: () => view() === "kanban", run: () => selectLane(-1) },
+            { id: "jazz.laneright", title: "Select lane right", group: "Jazz", bind: "right", enabled: () => view() === "kanban", run: () => selectLane(1) },
+            { id: "jazz.cardup", title: "Previous item", group: "Jazz", bind: "up", enabled: () => view() === "kanban" || view() === "inbox" || view() === "cron", run: () => { if (view() === "kanban") selectCard(-1); else if (view() === "inbox") setInboxSel((v) => Math.max(0, v - 1)); else setJobSel((v) => Math.max(0, v - 1)) } },
+            { id: "jazz.carddown", title: "Next item", group: "Jazz", bind: "down", enabled: () => view() === "kanban" || view() === "inbox" || view() === "cron", run: () => { if (view() === "kanban") selectCard(1); else if (view() === "inbox") setInboxSel((v) => v + 1); else setJobSel((v) => v + 1) } },
+            // card moves keep dedicated shift keys so arrows stay read-only
+            { id: "jazz.moveleft", title: "Move card left", group: "Jazz", bind: "shift+h", enabled: () => view() === "kanban", run: () => void moveSelected(-1) },
+            { id: "jazz.moveright", title: "Move card right", group: "Jazz", bind: "shift+l", enabled: () => view() === "kanban", run: () => void moveSelected(1) },
+            // archive the selected done/cancelled lane
+            { id: "jazz.archive", title: "Archive lane (done/cancelled)", group: "Jazz", bind: "shift+a", enabled: () => view() === "kanban" && (laneNames()[sel().lane] === "done" || laneNames()[sel().lane] === "cancelled"), run: () => void archiveSelectedLane() },
             { id: "jazz.enter", title: "Open card detail", group: "Jazz", bind: "return", enabled: () => view() === "kanban" || view() === "inbox", run: () => { if (view() === "kanban") { const card = cardsIn(laneNames()[sel().lane] ?? "")[sel().card]; if (card) openDetail(card.id) } else { const n = unreadFirst()[inboxSel()]; if (n?.cardID) openDetail(n.cardID) } } },
             { id: "jazz.new", title: "New card", group: "Jazz", bind: "n", enabled: () => view() === "kanban" || view() === "dash", run: () => void newCard() },
             { id: "jazz.remove", title: "Remove card", group: "Jazz", bind: "x", enabled: () => view() === "kanban", run: () => void removeSelected() },
             // inbox view
             { id: "jazz.read", title: "Mark notification read", group: "Jazz", bind: "m", enabled: () => view() === "inbox", run: () => void ackSelected() },
-            { id: "jazz.readall", title: "Mark all read", group: "Jazz", bind: "M", enabled: () => view() === "inbox", run: () => void ackAll() },
+            { id: "jazz.readall", title: "Mark all read", group: "Jazz", bind: "shift+m", enabled: () => view() === "inbox", run: () => void ackAll() },
+            { id: "jazz.clear", title: "Clear notification (remove from list)", group: "Jazz", bind: "c", enabled: () => view() === "inbox", run: () => void clearSelected() },
+            { id: "jazz.clearall", title: "Clear all notifications", group: "Jazz", bind: "shift+c", enabled: () => view() === "inbox", run: () => void clearAllInbox() },
             // cron view
             { id: "jazz.run", title: "Run cron job now", group: "Jazz", bind: "r", enabled: () => view() === "cron", run: () => void runSelectedJob() },
             { id: "jazz.toggle", title: "Enable/disable cron job", group: "Jazz", bind: "e", enabled: () => view() === "cron", run: () => void toggleJob() },
-            { id: "jazz.newjob", title: "New cron job", group: "Jazz", bind: "N", enabled: () => view() === "cron", run: () => void newJob() },
+            { id: "jazz.newjob", title: "New cron job", group: "Jazz", bind: "shift+n", enabled: () => view() === "cron", run: () => void newJob() },
             // card detail: review verdicts
-            { id: "jazz.comment", title: "Comment on card", group: "Jazz", bind: "C", enabled: () => view() === "detail", run: () => void addComment() },
+            { id: "jazz.comment", title: "Comment on card", group: "Jazz", bind: "shift+c", enabled: () => view() === "detail", run: () => void addComment() },
             { id: "jazz.accept", title: "Accept card (review → done)", group: "Jazz", bind: "a", enabled: () => view() === "detail" && currentCard()?.lane === "review", run: () => void decide("accept") },
-            { id: "jazz.cancelcard", title: "Cancel card (→ cancelled)", group: "Jazz", bind: "X", enabled: () => view() === "detail" && (currentCard()?.lane === "review" || currentCard()?.lane === "failed"), run: () => void decide("cancel") },
-            { id: "jazz.requeue", title: "Requeue card (→ triage)", group: "Jazz", bind: "R", enabled: () => view() === "detail" && (currentCard()?.lane === "review" || currentCard()?.lane === "failed"), run: () => void decide("requeue") },
+            { id: "jazz.cancelcard", title: "Cancel card (→ cancelled)", group: "Jazz", bind: "shift+x", enabled: () => view() === "detail" && (currentCard()?.lane === "review" || currentCard()?.lane === "failed"), run: () => void decide("cancel") },
+            { id: "jazz.requeue", title: "Requeue card (→ triage)", group: "Jazz", bind: "shift+r", enabled: () => view() === "detail" && (currentCard()?.lane === "review" || currentCard()?.lane === "failed"), run: () => void decide("requeue") },
           ],
         }))
         onCleanup(() => {
@@ -267,8 +343,19 @@ export default Plugin.define({
 
       const P = (n: number) => `p${n}`
 
+      /** Full-width title: kanban mode names the selected lane in full —
+       * column headers abbreviate, this line never clips. */
+      const rootTitle = () => {
+        if (view() !== "kanban") return ` jazz — ${view()} `
+        const lane = laneNames()[sel().lane]
+        if (!lane) return " jazz — kanban "
+        const total = Object.keys(board()?.cards ?? {}).length
+        const archived = archiveTotal() > 0 ? ` · ${archiveTotal()} archived` : ""
+        return ` jazz — kanban ▸ ${lane} (${cardsIn(lane).length}) · ${total} cards total${archived} `
+      }
+
       return (
-        <box style={{ flexDirection: "column", padding: 1 }} title={` jazz — ${view()} `} border={true}>
+        <box style={{ flexDirection: "column", padding: 1, height: "100%" }} title={rootTitle()} border={true}>
           <Show when={view() === "dash"}>
             <DashboardPanes
               notifications={unreadFirst()}
@@ -360,7 +447,7 @@ export default Plugin.define({
           <Show when={props.notifications.length === 0}>
             <text fg="#666"> inbox empty — nothing to review</text>
           </Show>
-          <text fg="#666"> j/k select · m read · M all · return open card · d dashboard</text>
+          <text fg="#666"> ↑/↓ select · c clear · C clear all · m read · M all · return open card · d dashboard</text>
         </box>
       )
     }
@@ -378,10 +465,26 @@ export default Plugin.define({
           <Show when={props.jobs.length === 0}>
             <text fg="#666"> no cron jobs — N to create</text>
           </Show>
-          <text fg="#666"> j/k select · e toggle · r run now · N new · d dashboard</text>
+          <text fg="#666"> ↑/↓ select · e toggle · r run now · N new · d dashboard</text>
         </box>
       )
     }
+
+    /** Short lane keys for narrow columns; full names live in the root title
+     * and the dashboard summary. All distinct at a glance. */
+    const LANE_SHORT: Record<string, string> = {
+      triage: "TRI",
+      backlog: "BKLG",
+      ready: "RDY",
+      in_progress: "INPR",
+      blocked: "BLKD",
+      failed: "FAIL",
+      review: "REV",
+      done: "DONE",
+      cancelled: "CNCL",
+    }
+    const laneShort = (lane: string) => LANE_SHORT[lane] ?? (lane.length <= 6 ? lane.toUpperCase() : `${lane.slice(0, 6).toUpperCase()}…`)
+    const ellipsize = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
 
     function KanbanView(props: {
       board: BoardState | null
@@ -393,29 +496,34 @@ export default Plugin.define({
         <box style={{ flexDirection: "column", flexGrow: 1 }}>
           <box style={{ flexDirection: "row", flexGrow: 1 }}>
             <For each={props.laneNames}>
-              {(lane, li) => (
-                <box
-                  title={` ${lane} (${props.cardsIn(lane).length})${li() === props.sel.lane ? " ▾" : ""} `}
-                  style={{ flexDirection: "column", width: `${Math.floor(100 / props.laneNames.length)}%`, border: true }}
-                >
-                  <For each={props.cardsIn(lane)}>
-                    {(card, ci) => {
-                      const selected = () => li() === props.sel.lane && ci() === props.sel.card
-                      return (
-                        <text fg={selected() ? "#7ee787" : PRIORITY_COLOR[card.priority] ?? undefined}>
-                          {`${selected() ? "▸" : " "}${card.profile ? "*" : " "}${card.title.slice(0, 14)}`}
-                        </text>
-                      )
-                    }}
-                  </For>
-                  <Show when={props.cardsIn(lane).length === 0}>
-                    <text fg="#666"> (empty)</text>
-                  </Show>
-                </box>
-              )}
+              {(lane, li) => {
+                const laneSel = () => li() === props.sel.lane
+                const cards = () => props.cardsIn(lane)
+                return (
+                  <box
+                    style={{ flexDirection: "column", flexGrow: 1, flexBasis: 0, border: true }}
+                    borderColor={laneSel() ? "#7ee787" : "#30363d"}
+                  >
+                    <text fg={laneSel() ? "#7ee787" : "#8b949e"} wrapMode="none">{` ${laneShort(lane)}·${cards().length}`}</text>
+                    <For each={cards()}>
+                      {(card, ci) => {
+                        const cardSel = () => laneSel() && ci() === props.sel.card
+                        return (
+                          <text fg={cardSel() ? "#7ee787" : PRIORITY_COLOR[card.priority] ?? undefined} wrapMode="none">
+                            {`${cardSel() ? "▸" : card.priority <= 1 ? "!" : " "}${card.profile ? "*" : " "}${ellipsize(card.title, 16)}`}
+                          </text>
+                        )
+                      }}
+                    </For>
+                    <Show when={cards().length === 0}>
+                      <text fg="#666" wrapMode="none"> (empty)</text>
+                    </Show>
+                  </box>
+                )
+              }}
             </For>
           </box>
-          <text fg="#666"> h/l move lane · j/k card · return detail · n new · x remove · d dashboard · * = assigned profile</text>
+          <text fg="#666"> ←/→ lane · ↑/↓ card · return detail · H/L move card · A archive done/cancelled · n new · x remove · ! high prio · * assigned</text>
         </box>
       )
     }

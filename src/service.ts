@@ -1,19 +1,22 @@
 import {
   addComment,
+  archiveLane,
   assignProfile,
   BoardError,
   createCard,
   endAssignment,
+  mergeArchive,
   moveCard,
   removeCard,
   startAssignment,
+  type ArchiveDoc,
   type AssignmentOutcome,
   type BoardState,
   type Card,
   type CardIDGen,
   type Priority,
 } from "./board"
-import { loadBoard, saveBoard, type JsonStorage } from "./storage"
+import { loadArchive, loadBoard, saveArchive, saveBoard, type JsonStorage } from "./storage"
 
 export interface BoardService {
   get(): Promise<BoardState>
@@ -31,6 +34,9 @@ export interface BoardService {
   assign(input: { cardID: string; profile: string; actor?: string; priority?: Priority }): Promise<Card>
   startWork(input: { cardID: string; profile?: string; sessionID?: string; actor?: string }): Promise<Card>
   endWork(input: { cardID: string; outcome: AssignmentOutcome; actor?: string; detail?: string }): Promise<Card>
+  /** Stash every card in an archivable lane (done|cancelled) into the archive store. */
+  archiveLane(input: { lane: string; actor?: string }): Promise<{ archived: number; archiveTotal: number }>
+  archiveList(): Promise<ArchiveDoc>
 }
 
 export interface BoardServiceOptions {
@@ -133,6 +139,27 @@ export function createBoardService(storage: JsonStorage, opts: BoardServiceOptio
         })
         return { board: next, value: next.cards[input.cardID]! }
       })
+    },
+
+    /**
+     * Board and archive write under one serialized step: the tail guarantees
+     * no other board mutation interleaves between the two saves.
+     */
+    archiveLane(input) {
+      return serialize(async () => {
+        const board = await loadBoard(storage, opts.lanes)
+        const { board: next, archived } = archiveLane(board, input.lane, {
+          ...(input.actor ? { actor: input.actor } : {}),
+        })
+        await saveBoard(storage, next)
+        const doc = mergeArchive(await loadArchive(storage), archived, new Date().toISOString())
+        await saveArchive(storage, doc)
+        return { archived: archived.length, archiveTotal: doc.order.length }
+      })
+    },
+
+    archiveList() {
+      return serialize(async () => loadArchive(storage))
     },
   }
 }

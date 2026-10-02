@@ -81,6 +81,17 @@ export function markAllRead(state: InboxState): InboxState {
   return { notifications: state.notifications.map((n) => (n.read ? n : { ...n, read: true })) }
 }
 
+/** Remove one notification from the list entirely — clearing, unlike acking, deletes it. */
+export function removeNotification(state: InboxState, id: string): InboxState {
+  if (!state.notifications.some((n) => n.id === id)) return state
+  return { notifications: state.notifications.filter((n) => n.id !== id) }
+}
+
+/** Empty the inbox. */
+export function clearNotifications(state: InboxState): InboxState {
+  return { notifications: [] }
+}
+
 export function unreadCount(state: InboxState): number {
   return state.notifications.filter((n) => !n.read).length
 }

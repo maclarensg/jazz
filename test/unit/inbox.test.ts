@@ -7,6 +7,7 @@ import {
   normalizeInbox,
   pushNotification,
   unreadCount,
+  type InboxState,
   type Notification,
 } from "../../src/inbox"
 
@@ -68,5 +69,42 @@ describe("inbox", () => {
   it("normalizeInbox accepts unknown top-level shapes defensively", () => {
     expect(normalizeInbox(undefined)).toEqual({ notifications: [] })
     expect(normalizeInbox({ notifications: "nope" })).toEqual({ notifications: [] })
+  })
+})
+import { clearNotifications, removeNotification } from "../../src/inbox"
+
+describe("inbox clear", () => {
+  const three = (): InboxState => {
+    let list: Notification[] = []
+    list = push(list, "fired")
+    list = push(list, "failed")
+    list = push(list, "entered_review", "c9")
+    return { notifications: list }
+  }
+
+  it("clears one notification by id; others survive", () => {
+    const s = three()
+    const cleared = removeNotification(s, s.notifications[1]!.id)
+    expect(cleared.notifications.map((x) => x.kind)).toEqual(["fired", "entered_review"])
+    expect(cleared.notifications).toHaveLength(2)
+  })
+
+  it("clearing an unknown id is a no-op", () => {
+    const s = three()
+    expect(removeNotification(s, "nope")).toBe(s)
+  })
+
+  it("clears everything; unread follows", () => {
+    const s = clearNotifications(three())
+    expect(s.notifications).toHaveLength(0)
+    expect(unreadCount(s)).toBe(0)
+  })
+
+  it("clearing a read notification still removes it and keeps unread accurate", () => {
+    let s = three()
+    s = markRead(s, s.notifications[0]!.id)
+    const cleared = removeNotification(s, s.notifications[0]!.id)
+    expect(cleared.notifications).toHaveLength(2)
+    expect(unreadCount(cleared)).toBe(2)
   })
 })

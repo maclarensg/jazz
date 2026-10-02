@@ -1,4 +1,4 @@
-import { markAllRead, markRead, normalizeInbox, pushNotification, unreadCount, type InboxState, type Notification } from "./inbox"
+import { clearNotifications, markAllRead, markRead, normalizeInbox, pushNotification, removeNotification, unreadCount, type InboxState, type Notification } from "./inbox"
 import { readJson, writeJson, type JsonStorage } from "./storage"
 
 export const INBOX_KEY = "inbox/notifications"
@@ -49,6 +49,25 @@ export function createInboxService(storage: JsonStorage, opts: { idgen?: () => s
         const state = markAllRead(await load())
         await save(state)
         return { unread: unreadCount(state) }
+      })
+    },
+
+    /** Remove one notification from the list entirely (clear, not ack). */
+    clear(id: string): Promise<{ cleared: number; unread: number }> {
+      return serialize(async () => {
+        const before = await load()
+        const state = removeNotification(before, id)
+        await save(state)
+        return { cleared: before.notifications.length - state.notifications.length, unread: unreadCount(state) }
+      })
+    },
+
+    /** Empty the inbox list. */
+    clearAll(): Promise<{ cleared: number; unread: number }> {
+      return serialize(async () => {
+        const before = await load()
+        await save(clearNotifications(before))
+        return { cleared: before.notifications.length, unread: 0 }
       })
     },
   }

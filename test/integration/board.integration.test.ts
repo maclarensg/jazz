@@ -81,3 +81,30 @@ describe("board over a real serve", () => {
     expect(board.cards[card.id]).toBeUndefined()
   })
 })
+
+describe("archive RPC (real server)", () => {
+  it("archives a done lane into the separate archive store", async () => {
+    const card = await server.jazz["card.create"]({ title: `nonce-${randomUUID()}` })
+    await server.jazz["card.move"]({ cardID: card.id, lane: "done" })
+
+    const r = await server.jazz["board.archiveLane"]({ lane: "done", actor: "gavin" })
+    expect(r.archived).toBeGreaterThanOrEqual(1)
+    expect(r.archiveTotal).toBeGreaterThanOrEqual(r.archived)
+
+    const board = await server.jazz["board.get"]({})
+    expect(board.cards[card.id]).toBeUndefined()
+    expect(board.lanes.done).toEqual([])
+
+    const archive = await server.jazz["archive.get"]({})
+    const mine = archive.cards.find((c: { id: string }) => c.id === card.id)
+    expect(mine).toBeDefined()
+    expect(mine!.archivedAt).toBeTruthy()
+    expect(mine!.history.at(-1)?.detail).toContain("archived from done")
+  })
+
+  it("refuses to archive a non-terminal lane with not_archivable", async () => {
+    await server.jazz["card.create"]({ title: `nonce-${randomUUID()}` })
+    const r = await server.jazz["board.archiveLane"]({ lane: "triage" }).catch((e: unknown) => e)
+    expect(JSON.stringify(r)).toContain("not_archivable")
+  })
+})

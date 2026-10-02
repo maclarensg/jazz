@@ -197,6 +197,31 @@ export default Plugin.define({
       "inbox.list": async (input) => inboxService.list(input),
       "inbox.ack": async (input) => inboxService.ack(input.id),
       "inbox.ackAll": async () => inboxService.ackAll(),
+      "inbox.clear": async (input) => inboxService.clear(input.id),
+      "inbox.clearAll": async () => inboxService.clearAll(),
+      "board.archiveLane": async (input, { error }) => {
+        try {
+          const result = await service.archiveLane({ lane: input.lane, ...(input.actor ? { actor: input.actor } : {}) })
+          if (result.archived > 0) {
+            await notify({
+              source: "card",
+              kind: "archived",
+              message: `archived ${result.archived} cards from ${input.lane} (archive: ${result.archiveTotal})`,
+            })
+          }
+          return result
+        } catch (e) {
+          if (e instanceof BoardError) {
+            if (e.code === "unknown-lane") return error("unknown_lane", e.message, { lane: input.lane })
+            return error("not_archivable", e.message, { lane: input.lane })
+          }
+          throw e
+        }
+      },
+      "archive.get": async () => {
+        const doc = await service.archiveList()
+        return { total: doc.order.length, cards: doc.order.map((id) => doc.cards[id]!) }
+      },
       "card.comment": async (input, { error }) => {
         try {
           return await service.comment(input)

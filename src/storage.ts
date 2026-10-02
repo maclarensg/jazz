@@ -1,5 +1,5 @@
 import type { Plugin } from "@opencode/plugin"
-import { createBoard, migrateBoard, DEFAULT_LANES, type BoardState, type Card } from "./board"
+import { createArchive, createBoard, migrateBoard, DEFAULT_LANES, type ArchiveDoc, type BoardState, type Card } from "./board"
 
 export class StorageError extends Error {
   constructor(message: string) {
@@ -95,4 +95,45 @@ export async function loadBoard(storage: JsonStorage, defaultLanes?: readonly st
 
 export async function saveBoard(storage: JsonStorage, board: BoardState): Promise<void> {
   await writeJson(storage, BOARD_KEY, board)
+}
+
+export const ARCHIVE_KEY = "board/archive"
+
+/**
+ * Archive loads are defensive by design: a corrupted archive doc resolves to
+ * an empty archive rather than an error — the archive is a stash of terminal
+ * cards and must never brick board operations.
+ */
+export async function loadArchive(storage: JsonStorage): Promise<ArchiveDoc> {
+  const value = await readJson(storage, ARCHIVE_KEY)
+  if (value === undefined) return createArchive()
+  try {
+    return validateArchive(value)
+  } catch {
+    return createArchive()
+  }
+}
+
+export async function saveArchive(storage: JsonStorage, doc: ArchiveDoc): Promise<void> {
+  await writeJson(storage, ARCHIVE_KEY, doc)
+}
+
+function validateArchive(value: unknown): ArchiveDoc {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new StorageError("archive value is not a doc")
+  const v = value as { order?: unknown; cards?: unknown }
+  if (typeof v.cards !== "object" || v.cards === null || Array.isArray(v.cards)) throw new StorageError("archive cards is not a record")
+  const rawOrder = Array.isArray(v.order) ? v.order : Object.keys(v.cards)
+  const order: string[] = []
+  const cards: ArchiveDoc["cards"] = {}
+  for (const id of rawOrder) {
+    if (typeof id !== "string" || order.includes(id)) continue
+    const raw = (v.cards as Record<string, unknown>)[id]
+    if (raw === undefined) continue
+    const card = validateCard(raw, id)
+    const archived = raw as Record<string, unknown>
+    if (typeof archived.archivedAt !== "string") continue
+    cards[id] = { ...card, archivedAt: archived.archivedAt }
+    order.push(id)
+  }
+  return { order, cards }
 }

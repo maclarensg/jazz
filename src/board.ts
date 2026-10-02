@@ -66,6 +66,7 @@ export class BoardError extends Error {
     public code:
       | "unknown-card"
       | "unknown-lane"
+      | "not-archivable"
       | "bad-priority"
       | "bad-source"
       | "bad-comment"
@@ -220,6 +221,70 @@ export function removeCard(board: BoardState, cardID: string): BoardState {
     cards,
     lanes: { ...board.lanes, [card.lane]: board.lanes[card.lane]!.filter((id) => id !== cardID) },
   }
+}
+
+// ---- archive ----
+
+/** Terminal-outcome lanes whose cards may be stashed into the archive. */
+export const ARCHIVABLE_LANES = ["done", "cancelled"] as const
+export const ARCHIVE_CAP = 500
+
+/** A full card snapshot plus the moment it left the board. */
+export interface ArchivedCard extends Card {
+  archivedAt: string
+}
+
+/** The archive store: insertion order, capped to the newest ARCHIVE_CAP cards. */
+export interface ArchiveDoc {
+  order: string[]
+  cards: Record<string, ArchivedCard>
+}
+
+export function createArchive(): ArchiveDoc {
+  return { order: [], cards: {} }
+}
+
+/**
+ * Stash every card in an archivable lane (done|cancelled) out of the board.
+ * Each card's history records where it was archived from; the caller owns
+ * merging the returned cards into the archive doc.
+ */
+export function archiveLane(
+  board: BoardState,
+  lane: string,
+  opts: { actor?: string } = {},
+): { board: BoardState; archived: Card[] } {
+  requireLane(board, lane)
+  if (!(ARCHIVABLE_LANES as readonly string[]).includes(lane)) {
+    throw new BoardError("not-archivable", `only ${ARCHIVABLE_LANES.join("|")} can be archived, not ${lane}`)
+  }
+  const ids = [...board.lanes[lane]!]
+  const ts = now()
+  const archived: Card[] = ids.map((id) => {
+    const card = requireCard(board, id)
+    const history = [...card.history, { kind: "note" as const, actor: opts.actor ?? "system", detail: `archived from ${lane}`, ts }]
+    const capped = history.length > HISTORY_CAP ? history.slice(history.length - HISTORY_CAP) : history
+    return { ...card, history: capped, updated: ts }
+  })
+  const cards = { ...board.cards }
+  for (const id of ids) delete cards[id]
+  return { board: { cards, lanes: { ...board.lanes, [lane]: [] } }, archived }
+}
+
+/** Merge archived cards into the doc: ids dedupe in place, cap keeps the newest. */
+export function mergeArchive(doc: ArchiveDoc, archived: readonly Card[], ts: string): ArchiveDoc {
+  const cards: Record<string, ArchivedCard> = { ...doc.cards }
+  const order = [...doc.order]
+  for (const card of archived) {
+    cards[card.id] = { ...card, archivedAt: ts }
+    if (!order.includes(card.id)) order.push(card.id)
+  }
+  if (order.length > ARCHIVE_CAP) {
+    const keep = order.slice(order.length - ARCHIVE_CAP)
+    for (const id of Object.keys(cards)) if (!keep.includes(id)) delete cards[id]
+    return { order: keep, cards }
+  }
+  return { order, cards }
 }
 
 export function listLane(board: BoardState, lane: string): Card[] {

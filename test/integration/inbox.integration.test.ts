@@ -48,3 +48,33 @@ describe("inbox RPC (real server)", () => {
     expect((notifications as Notification[]).some((n) => n.cardID === card.id && n.kind === "requeued")).toBe(false)
   })
 })
+
+describe("inbox clear RPC (real server)", () => {
+  it("clear removes one notification from the list entirely", async () => {
+    const card = await server.jazz["card.create"]({ title: `nonce-${randomUUID()}` })
+    await server.jazz["card.move"]({ cardID: card.id, lane: "failed" })
+    const { notifications } = await server.jazz["inbox.list"]({})
+    const mine = (notifications as Notification[]).find((n) => n.cardID === card.id && n.kind === "failed")
+    expect(mine).toBeDefined()
+
+    const cleared = await server.jazz["inbox.clear"]({ id: mine!.id })
+    expect(cleared.cleared).toBe(1)
+
+    const after = await server.jazz["inbox.list"]({})
+    expect((after.notifications as Notification[]).some((n) => n.id === mine!.id)).toBe(false)
+    await server.jazz["inbox.clearAll"]({})
+  })
+
+  it("clearAll empties the list and reports how many went", async () => {
+    const card = await server.jazz["card.create"]({ title: `nonce-${randomUUID()}` })
+    await server.jazz["card.move"]({ cardID: card.id, lane: "failed" })
+    const { notifications } = await server.jazz["inbox.list"]({})
+    expect(notifications.length).toBeGreaterThan(0)
+
+    const r = await server.jazz["inbox.clearAll"]({})
+    expect(r.cleared).toBe(notifications.length)
+    expect(r.unread).toBe(0)
+    const after = await server.jazz["inbox.list"]({})
+    expect(after.notifications).toHaveLength(0)
+  })
+})
