@@ -109,6 +109,43 @@ describe("cron over a real serve", () => {
   })
 })
 
+describe("cron agent resolution (real server, card fc0a2fb6)", () => {
+  const runNowAndWait = async (jobID: string) => {
+    await primary.jazz["cron.runNow"]({ jobID })
+    const deadline = Date.now() + 15_000
+    let runs: Array<{ status: string; sessionID?: string; note?: string }> = []
+    while (Date.now() < deadline) {
+      const runDoc = await primary.jazz["cron.runs"]({ jobID })
+      runs = runDoc.runs as typeof runs
+      if (runs.length >= 1) return runs
+      await new Promise((r) => setTimeout(r, 1000))
+    }
+    return runs
+  }
+
+  it("an unresolvable job.agent fires a living session on the default agent with a run note — never a dead session", async () => {
+    const ghost = `ghost-persona-${randomUUID().slice(0, 8)}`
+    const name = `ghostfire-${randomUUID().slice(0, 8)}`
+    const job = await primary.jazz["cron.upsert"]({
+      name,
+      cronExpr: "0 3 * * *",
+      prompt: "Reply with the single word ok and nothing else.",
+      agent: ghost,
+    })
+    expect(job.agent).toBe(ghost)
+
+    const runs = await runNowAndWait(job.id)
+    expect(runs[0]!.status).toBe("fired")
+    expect(runs[0]!.sessionID).toBeDefined()
+    // the fallback note: ghost agent named, degraded to the default agent
+    expect(runs[0]!.note).toContain(ghost)
+    expect(runs[0]!.note).toContain("default agent")
+    // and the session actually exists on the server (it did not die on arrival)
+    const sessions = await primary.client.session.list({})
+    expect(JSON.stringify(sessions)).toContain(`jazz:${name}`)
+  })
+})
+
 describe("cron allowNotify (real server)", () => {
   const runNowAndWait = async (jobID: string) => {
     await primary.jazz["cron.runNow"]({ jobID })

@@ -24,6 +24,9 @@ export interface CronRun {
   error?: string
   /** Set when the fire is a catch-up for a slot missed while the server was down. */
   missed?: boolean
+  /** Present when job.agent was unresolvable and the fire degraded to the
+   * default agent instead of a dead session (agent-resolve fallback). */
+  note?: string
 }
 
 export type CatchupPolicy = "fire-missed" | "skip-missed"

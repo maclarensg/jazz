@@ -8,7 +8,8 @@ import { BoardError, createBoardService } from "./service"
 import { createInboxService } from "./inbox-service"
 import type { Notification } from "./inbox"
 import { createCronService, CronError, type CronUpsertInput } from "./cron-service"
-import { catchupPlan, cronNotifyKind, dueJobs, leaseAlive, nextRunISO, type CatchupPolicy, type CronJob, type CronRun } from "./cron"
+import { catchupPlan, dueJobs, leaseAlive, nextRunISO, type CatchupPolicy, type CronJob } from "./cron"
+import { makeFireJob } from "./cron-fire"
 import { createLinkRegistry, EXIT_NO_SUBMIT, isTerminalOutcome, OUTCOME_LANES as OUTCOME_LANES_MAP, reviewGuard, transitionLane, type SessionOutcome } from "./link"
 import { createRoutingService } from "./routing-service"
 import { resolveWorkerAgent } from "./agent-resolve"
@@ -474,44 +475,20 @@ export default Plugin.define({
     const cronService = createCronService(storage)
     const instanceID = randomUUID()
 
-    const fireJob = async (job: CronJob, missed: boolean): Promise<CronRun> => {
-      const run: CronRun = {
-        jobID: job.id,
-        jobName: job.name,
-        firedAt: new Date().toISOString(),
-        status: "fired",
-        ...(missed ? { missed: true } : {}),
-      }
-      try {
-        const session = await ctx.session.create({ title: `jazz:${job.name}` })
-        if (job.agent) await ctx.session.switchAgent({ sessionID: session.id, agent: job.agent })
-        await ctx.session.prompt({ sessionID: session.id, text: job.prompt })
-        run.sessionID = session.id
-        await emitCronFired?.({ jobID: job.id, jobName: job.name, sessionID: session.id })
-        const kind = cronNotifyKind(job, { ok: true, missed })
-        if (kind) {
-          await notify({
-            source: "cron",
-            kind,
-            message: `cron ${job.name} (${job.id}) ${missed ? "caught up" : "fired"} → session ${session.id}`,
-            jobID: job.id,
-          })
-        }
-      } catch (e) {
-        run.status = "error"
-        run.error = e instanceof Error ? e.message : String(e)
-        await emitCronFailed?.({ jobID: job.id, jobName: job.name, error: run.error })
-        await notify({
-          source: "cron",
-          // failures always notify, even when allowNotify=false (cronNotifyKind)
-          kind: cronNotifyKind(job, { ok: false })!,
-          message: `cron ${job.name} (${job.id}) failed: ${run.error}`,
-          jobID: job.id,
-        })
-      }
-      await cronService.appendRun(run)
-      return run
-    }
+    // Fire bodies live in src/cron-fire.ts (extracted so the agent-resolution
+    // fallback is unit-testable): resolution, notification contract, run ring.
+    const fireJob = makeFireJob({
+      createSession: (title) => ctx.session.create({ title }),
+      switchAgent: (sessionID, agent) => ctx.session.switchAgent({ sessionID, agent }),
+      prompt: (sessionID, text) => ctx.session.prompt({ sessionID, text }),
+      runtimeAgentIds,
+      appendRun: (run) => cronService.appendRun(run),
+      notify,
+      // late-bound on purpose: emitCronFired/emitCronFailed are let-bound
+      // during setup — preserve the original call-time dereference
+      onFired: (e) => emitCronFired?.(e),
+      onFailed: (e) => emitCronFailed?.(e),
+    })
 
     let firstTick = true
     let ticking = false
