@@ -57,6 +57,29 @@ export default Plugin.define({
       const ctx = usePlugin()
       const jazz = ctx.client.rpc(JazzRpc)
 
+      // While a dialog input is focused, every jazz global keybind must stand
+      // down — otherwise plain-letter binds (i, q, p, …) swallow typed text.
+      let inputActive = false
+      const askText = async (opts: Parameters<typeof ctx.ui.dialog.prompt>[0]) => {
+        inputActive = true
+        try {
+          return await ctx.ui.dialog.prompt(opts)
+        } finally {
+          inputActive = false
+        }
+      }
+      const askYes = async (opts: Parameters<typeof ctx.ui.dialog.confirm>[0]) => {
+        inputActive = true
+        try {
+          return await ctx.ui.dialog.confirm(opts)
+        } finally {
+          inputActive = false
+        }
+      }
+      const standDownDuringInput = <T extends { enabled?: () => boolean }>(cmds: T[]): T[] =>
+        cmds.map((c) => ({ ...c, enabled: () => !inputActive && (c.enabled ? c.enabled() : true) }))
+
+
       const [view, setView] = createSignal<View>("dash")
       const [board, setBoard] = createSignal<BoardState | null>(null)
       const [jobs, setJobs] = createSignal<CronJob[]>([])
@@ -144,9 +167,9 @@ export default Plugin.define({
       }
 
       const newCard = async () => {
-        const title = await ctx.ui.dialog.prompt({ title: "New card", placeholder: "what needs doing?" })
+        const title = await askText({ title: "New card", placeholder: "what needs doing?" })
         if (!title?.trim()) return
-        const priorityStr = await ctx.ui.dialog.prompt({ title: "Priority", placeholder: "0-3 (enter = 2)" })
+        const priorityStr = await askText({ title: "Priority", placeholder: "0-3 (enter = 2)" })
         const priority = priorityStr && /^[0-3]$/.test(priorityStr.trim()) ? Number(priorityStr.trim()) : undefined
         await jazz["card.create"]({ title: title.trim(), ...(priority !== undefined ? { priority: priority as 0 | 1 | 2 | 3 } : {}) })
         setView("kanban")
@@ -158,7 +181,7 @@ export default Plugin.define({
         const lanes = laneNames()
         const card = cardsIn(lanes[sel().lane] ?? "")[sel().card]
         if (!card) return
-        const yes = await ctx.ui.dialog.confirm({ title: "Remove card", message: `Remove "${card.title}"?` })
+        const yes = await askYes({ title: "Remove card", message: `Remove "${card.title}"?` })
         if (!yes) return
         await jazz["card.remove"]({ cardID: card.id })
         setSel({ lane: sel().lane, card: 0 })
@@ -195,7 +218,7 @@ export default Plugin.define({
       const addComment = async () => {
         const card = commentCard()
         if (!card) return
-        const body = await ctx.ui.dialog.prompt({ title: `Comment on ${card.id}`, placeholder: "your note" })
+        const body = await askText({ title: `Comment on ${card.id}`, placeholder: "your note" })
         if (!body?.trim()) return
         await jazz["card.comment"]({ cardID: card.id, author: "gavin", body: body.trim() })
         await refresh()
@@ -231,7 +254,7 @@ export default Plugin.define({
       const clearAllInbox = async () => {
         const list = unreadFirst()
         if (!list.length) return
-        const yes = await ctx.ui.dialog.confirm({ title: "Clear inbox", message: `Remove all ${list.length} notifications from the list?` })
+        const yes = await askYes({ title: "Clear inbox", message: `Remove all ${list.length} notifications from the list?` })
         if (!yes) return
         const r = await jazz["inbox.clearAll"]({})
         setUnread(r.unread)
@@ -249,7 +272,7 @@ export default Plugin.define({
           ctx.ui.toast.show({ message: `${lane} is already empty`, variant: "error" })
           return
         }
-        const yes = await ctx.ui.dialog.confirm({ title: "Archive lane", message: `Move all ${count} cards from ${lane} to the archive?` })
+        const yes = await askYes({ title: "Archive lane", message: `Move all ${count} cards from ${lane} to the archive?` })
         if (!yes) return
         try {
           const r = await jazz["board.archiveLane"]({ lane, actor: "gavin" })
@@ -291,11 +314,11 @@ export default Plugin.define({
       }
 
       const newJob = async () => {
-        const name = await ctx.ui.dialog.prompt({ title: "Cron job name", placeholder: "triage-sweep" })
+        const name = await askText({ title: "Cron job name", placeholder: "triage-sweep" })
         if (!name?.trim()) return
-        const cronExpr = await ctx.ui.dialog.prompt({ title: "Cron expression", placeholder: "*/1 * * * *" })
+        const cronExpr = await askText({ title: "Cron expression", placeholder: "*/1 * * * *" })
         if (!cronExpr?.trim()) return
-        const prompt = await ctx.ui.dialog.prompt({ title: "Prompt", placeholder: "what should each run do?" })
+        const prompt = await askText({ title: "Prompt", placeholder: "what should each run do?" })
         if (!prompt?.trim()) return
         try {
           await jazz["cron.upsert"]({ name: name.trim(), cronExpr: cronExpr.trim(), prompt: prompt.trim() })
@@ -314,7 +337,7 @@ export default Plugin.define({
         ctx.keymap.layer(() => ({
           mode: "global",
           priority: 10,
-          commands: [
+          commands: standDownDuringInput([
             // view switching (c is cron everywhere EXCEPT inbox, where it clears)
             { id: "jazz.inbox", title: "Jazz inbox", group: "Jazz", bind: "i", run: () => { setInboxSel(0); setView("inbox") } },
             { id: "jazz.cron", title: "Jazz cron", group: "Jazz", bind: "c", enabled: () => view() !== "detail" && view() !== "inbox", run: () => { setJobSel(0); setView("cron") } },
@@ -352,8 +375,8 @@ export default Plugin.define({
             { id: "jazz.accept", title: "Accept card (review → done)", group: "Jazz", bind: "a", enabled: () => view() === "detail" && currentCard()?.lane === "review", run: () => void decide("accept") },
             { id: "jazz.cancelcard", title: "Cancel card (→ cancelled)", group: "Jazz", bind: "shift+x", enabled: () => view() === "detail" && (currentCard()?.lane === "review" || currentCard()?.lane === "failed"), run: () => void decide("cancel") },
             { id: "jazz.requeue", title: "Requeue card (→ triage)", group: "Jazz", bind: "shift+r", enabled: () => view() === "detail" && (currentCard()?.lane === "review" || currentCard()?.lane === "failed"), run: () => void decide("requeue") },
-          ],
-        }))
+            ]),
+          }))
         onCleanup(() => {
           offMoved()
           offInbox()

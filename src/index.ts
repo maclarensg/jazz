@@ -11,6 +11,7 @@ import { createCronService, CronError, type CronUpsertInput } from "./cron-servi
 import { catchupPlan, cronNotifyKind, dueJobs, leaseAlive, nextRunISO, type CatchupPolicy, type CronJob, type CronRun } from "./cron"
 import { createLinkRegistry, EXIT_NO_SUBMIT, isTerminalOutcome, OUTCOME_LANES as OUTCOME_LANES_MAP, reviewGuard, transitionLane, type SessionOutcome } from "./link"
 import { createRoutingService } from "./routing-service"
+import { resolveWorkerAgent } from "./agent-resolve"
 import { normalizeRegistry, searchProfiles, topCandidates, type RegistryEntry } from "./profiles"
 import { JazzRpc } from "./rpc"
 
@@ -98,6 +99,17 @@ export default Plugin.define({
       await emitInbox?.(notification)
     }
 
+    /** Ids of the agents this server can actually run. Empty on failure — the
+     * safe default is prompt-only personas, never an unresolvable agent. */
+    const runtimeAgentIds = async (): Promise<string[]> => {
+      try {
+        const { data } = await ctx.agent.list()
+        return data.map((a) => a.id)
+      } catch {
+        return []
+      }
+    }
+
     const service = createBoardService(storage, {
       ...(lanes ? { lanes } : {}),
       onMoved: async (card, fromLane) => {
@@ -105,10 +117,18 @@ export default Plugin.define({
         if (fromLane === card.lane) return // creates land without a lane change — not a move
         const kind = LANE_NOTIFY_KINDS[card.lane]
         if (kind) {
+          let message = `${card.title} (${card.id}): ${fromLane} → ${card.lane}`
+          if (card.lane === "review" && card.comments.length > 0) {
+            const last = card.comments[card.comments.length - 1]
+            if (last) {
+              const body = last.body.length > 220 ? `${last.body.slice(0, 220)}…` : last.body
+              message += ` · ${last.author}: ${body}`
+            }
+          }
           await notify({
             source: "card",
             kind,
-            message: `${card.title} (${card.id}): ${fromLane} → ${card.lane}`,
+            message,
             cardID: card.id,
           })
         }
@@ -309,12 +329,20 @@ export default Plugin.define({
       const actor = card.profile ?? "agent"
       await service.move({ cardID: input.cardID, lane: "in_progress", actor })
       const session = await ctx.session.create({ title: `jazz:${card.title}` })
-      if (card.profile) {
+      // Only attach a profile the runtime can actually resolve — switchAgent
+      // accepts unknown ids silently and the session dies at prompt time
+      // (Session.AgentNotFoundError). Everyone else runs the default agent
+      // with the profile role in the prompt (hybrid personas).
+      const resolution = resolveWorkerAgent(card.profile, await runtimeAgentIds())
+      if (resolution.agent) {
         try {
-          await ctx.session.switchAgent({ sessionID: session.id, agent: card.profile })
+          await ctx.session.switchAgent({ sessionID: session.id, agent: resolution.agent })
         } catch {
-          // non-native profile — the role rides in the prompt instead (hybrid personas)
+          // agent list drifted since resolution — the role rides in the prompt instead
         }
+      }
+      if (resolution.note) {
+        await service.comment({ cardID: input.cardID, author: "system", body: resolution.note })
       }
       registry.bind(session.id, input.cardID, Date.now())
       await service.startWork({ cardID: input.cardID, profile: card.profile ?? "worker", sessionID: session.id, actor })
