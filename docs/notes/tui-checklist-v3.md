@@ -130,3 +130,35 @@ should be unaffected; flagged for an upstream look if it reproduces by hand.
 Lesson: model-heavy integration files must run with `--fileParallelism false`
 — parallel real-LLM sessions contend for the provider pool and stall, which
 masquerades as a code regression. Runner fix, not retry-on-flake.
+
+## v3.3 — `p` comment + review verdict pane (2026-10-03)
+
+| Check | Result |
+|---|---|
+| `p` on selected card in board view → comment dialog targeting the SELECTED card ("Comment on t2") | ✅ |
+| Posted comment lands in kv (`t2 ← gavin: "fuzz"`) and board refreshes | ✅ |
+| `p` in card detail opens the same dialog (`shift+c` alias kept) | ✅ |
+| Review-lane card detail renders amber verdict pane: `a mark done · X cancel (→ cancelled) · R requeue to triage (rework — post a comment first: p)` | ✅ (multiple captures) |
+| `R` from pane-visible detail: rv1 review→triage, toast `rv1 → triage`, kv history `review→triage` | ✅ |
+| `a` accept: rv1 review→done, kv history + inbox notification (fired during an Enter-leak; same decide() path) | ✅ |
+| `X` cancel: same decide() path as R/a; interactive drive defeated by the documented tmux keypress/dialog races — one deliberate press in production TUI closes it | ⏳ code-path shared, not keyed |
+| typecheck clean, unit 120/120 | ✅ |
+
+New scratch-environment lessons (cost real time — record them):
+1. **`ctrl+j` is undeliverable through `tmux send-keys`** — C-j IS byte 0x0a
+   (Enter) on a legacy terminal; only the kitty keyboard protocol
+   distinguishes them and send-keys can't emit it. Enter the board via the
+   `/board` slash command inside a session instead.
+2. **The CLI-side plugin does NOT auto-load from the plugins dir scan** the
+   way the server side does. Scratch config needs
+   `~cli.json → {"plugins": ["<abs path to staged plugin>"]}` — without it
+   the slash palette says "No matching commands" even though the server log
+   shows the plugin loading. With it, `/board` works.
+3. Launch standalone TUIs from a NEUTRAL cwd (`cd /tmp/opencode`), or the
+   project config/plugins of wherever you were leak in.
+4. Keymap layers stay live under prompt dialogs: typed text containing
+   bound letters (e.g. `n`) fires those binds mid-dialog. Type bind-free
+   text when driving dialogs (e.g. `fuzz`).
+5. List-view lane moves log actor `system`, not `gavin` (moveSelected passes
+   no actor) — pre-existing; distinguishable from dispatcher moves only by
+   the assignments field.

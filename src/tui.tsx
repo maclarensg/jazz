@@ -183,8 +183,17 @@ export default Plugin.define({
         }
       }
 
+      const commentCard = (): Card | null => {
+        if (view() === "detail") return currentCard()
+        if (view() === "kanban") {
+          const lane = laneNames()[sel().lane] ?? ""
+          return cardsIn(lane)[sel().card] ?? null
+        }
+        return null
+      }
+
       const addComment = async () => {
-        const card = currentCard()
+        const card = commentCard()
         if (!card) return
         const body = await ctx.ui.dialog.prompt({ title: `Comment on ${card.id}`, placeholder: "your note" })
         if (!body?.trim()) return
@@ -329,6 +338,7 @@ export default Plugin.define({
             { id: "jazz.newjob", title: "New cron job", group: "Jazz", bind: "shift+n", enabled: () => view() === "cron", run: () => void newJob() },
             // card detail: review verdicts
             { id: "jazz.comment", title: "Comment on card", group: "Jazz", bind: "shift+c", enabled: () => view() === "detail", run: () => void addComment() },
+            { id: "jazz.postcomment", title: "Post comment on card (selected or open)", group: "Jazz", bind: "p", enabled: () => view() === "kanban" || view() === "detail", run: () => void addComment() },
             { id: "jazz.accept", title: "Accept card (review → done)", group: "Jazz", bind: "a", enabled: () => view() === "detail" && currentCard()?.lane === "review", run: () => void decide("accept") },
             { id: "jazz.cancelcard", title: "Cancel card (→ cancelled)", group: "Jazz", bind: "shift+x", enabled: () => view() === "detail" && (currentCard()?.lane === "review" || currentCard()?.lane === "failed"), run: () => void decide("cancel") },
             { id: "jazz.requeue", title: "Requeue card (→ triage)", group: "Jazz", bind: "shift+r", enabled: () => view() === "detail" && (currentCard()?.lane === "review" || currentCard()?.lane === "failed"), run: () => void decide("requeue") },
@@ -523,7 +533,7 @@ export default Plugin.define({
               }}
             </For>
           </box>
-          <text fg="#666"> ←/→ lane · ↑/↓ card · return detail · H/L move card · A archive done/cancelled · n new · x remove · ! high prio · * assigned</text>
+          <text fg="#666"> ←/→ lane · ↑/↓ card · return detail · p comment · H/L move card · A archive done/cancelled · n new · x remove · ! high prio · * assigned</text>
         </box>
       )
     }
@@ -534,39 +544,51 @@ export default Plugin.define({
       const hist = (h: HistoryEntry) => `${h.ts.slice(5, 16)} ${h.kind.padEnd(9, " ")} ${h.actor.padEnd(12, " ")} ${h.detail ?? ""}${h.from ? ` ${h.from}→${h.to}` : ""}`
       const verdicts =
         c.lane === "review"
-          ? "a accept → done · x cancel · r requeue → triage"
+          ? "a done · X cancel · R requeue"
           : c.lane === "failed"
-            ? "x cancel · r requeue → triage"
+            ? "X cancel · R requeue"
             : "verdict keys apply from review (or failed) lane"
+      const decidable = c.lane === "review" || c.lane === "failed"
       return (
-        <box style={{ flexDirection: "row", flexGrow: 1 }}>
-          <box style={{ flexDirection: "column", flexGrow: 1, border: true }} title={` ${c.id} · ${c.lane} `}>
-            <text fg={PRIORITY_COLOR[c.priority]}>{`[${c.priority}] ${c.title}`}</text>
-            <text>{`profile: ${c.profile ?? "unassigned"} · source: ${c.source} · p${c.priority}`}</text>
-            <text>{`details: ${c.details ?? "—"}`}</text>
-            <text> </text>
-            <text fg="#8b949e">assignments:</text>
-            <For each={c.assignments}>
-              {(a) => <text>{` ${a.profile} ${a.startedAt.slice(5, 16)}→${a.endedAt?.slice(5, 16) ?? "now"} ${a.outcome ?? "working"}`}</text>}
-            </For>
-            <Show when={c.assignments.length === 0}>
-              <text fg="#666"> (none yet)</text>
-            </Show>
-            <text> </text>
-            <text fg="#8b949e">comments (newest first):</text>
-            <For each={last(c.comments, 10)}>
-              {(m) => <text>{` ${m.author}: ${m.body.slice(0, 70)}`}</text>}
-            </For>
-            <Show when={c.comments.length === 0}>
-              <text fg="#666"> (none)</text>
-            </Show>
+        <box style={{ flexDirection: "column", flexGrow: 1 }}>
+          <box style={{ flexDirection: "row", flexGrow: 1 }}>
+            <box style={{ flexDirection: "column", flexGrow: 1, border: true }} title={` ${c.id} · ${c.lane} `}>
+              <text fg={PRIORITY_COLOR[c.priority]}>{`[${c.priority}] ${c.title}`}</text>
+              <text>{`profile: ${c.profile ?? "unassigned"} · source: ${c.source} · p${c.priority}`}</text>
+              <text>{`details: ${c.details ?? "—"}`}</text>
+              <text> </text>
+              <text fg="#8b949e">assignments:</text>
+              <For each={c.assignments}>
+                {(a) => <text>{` ${a.profile} ${a.startedAt.slice(5, 16)}→${a.endedAt?.slice(5, 16) ?? "now"} ${a.outcome ?? "working"}`}</text>}
+              </For>
+              <Show when={c.assignments.length === 0}>
+                <text fg="#666"> (none yet)</text>
+              </Show>
+              <text> </text>
+              <text fg="#8b949e">comments (newest first):</text>
+              <For each={last(c.comments, 10)}>
+                {(m) => <text>{` ${m.author}: ${m.body.slice(0, 70)}`}</text>}
+              </For>
+              <Show when={c.comments.length === 0}>
+                <text fg="#666"> (none)</text>
+              </Show>
+            </box>
+            <box style={{ flexDirection: "column", width: "46%", border: true }} title=" history (newest first) ">
+              <For each={last(c.history, 14)}>
+                {(h) => <text>{hist(h).slice(0, 74)}</text>}
+              </For>
+            </box>
           </box>
-          <box style={{ flexDirection: "column", width: "46%", border: true }} title=" history (newest first) ">
-            <For each={last(c.history, 14)}>
-              {(h) => <text>{hist(h).slice(0, 74)}</text>}
-            </For>
-          </box>
-          <text fg="#666">{` C comment · ${verdicts} · d dashboard`}</text>
+          <Show when={decidable}>
+            <box style={{ flexDirection: "column", border: true, borderColor: "#d29922" }} title=" verdict — decide this card ">
+              <Show when={c.lane === "review"}>
+                <text fg="#7ee787" wrapMode="none">{`  a  mark done`}</text>
+              </Show>
+              <text fg="#f85149" wrapMode="none">{`  X  cancel  (→ cancelled)`}</text>
+              <text fg="#d29922" wrapMode="none">{`  R  requeue to triage  (rework — post a comment first: p)`}</text>
+            </box>
+          </Show>
+          <text fg="#666">{` p comment · ${verdicts} · d dashboard`}</text>
         </box>
       )
     }

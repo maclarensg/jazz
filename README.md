@@ -99,14 +99,16 @@ silently inert in V2.
 
 TUI (`ctrl+j` or `/board`): 3-pane dashboard; `i` inbox, `c` cron, `k` kanban
 full views; kanban navigation is arrow-only (`←`/`→` lanes, `↑`/`↓` cards,
-selected lane highlighted); `H`/`L` move the selected card between lanes,
-`A` archives every card in the selected done/cancelled lane into the archive
-store (`archive.get`; count shown in the kanban title bar), `n` new, `x`
-remove; inbox `c` clears the selected notification and `C` clears all
-(removal from the list — `m`/`M` still mark read without deleting); card
-detail with history/comments/assignments; on review (or failed) lanes the card
-detail carries the verdict keys (a accept · x cancel · r requeue) and `C`
-comments.
+selected lane highlighted); `p` posts a comment on the selected card (works
+from the board and the detail view; `C` still comments from detail), `H`/`L`
+move the selected card between lanes, `A` archives every card in the selected
+done/cancelled lane into the archive store (`archive.get`; count shown in the
+kanban title bar), `n` new, `x` remove; inbox `c` clears the selected
+notification and `C` clears all (removal from the list — `m`/`M` still mark
+read without deleting); card detail with history/comments/assignments; on
+review (or failed) lanes the detail shows a verdict pane — `a` mark done,
+`X` cancel, `R` requeue to triage (rework: post a comment first) — deciding
+routes through `review.decide` and returns to the board.
 
 ## Profile registry
 
