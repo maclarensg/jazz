@@ -151,6 +151,8 @@ export interface Notification {
   source: "card" | "cron"
   kind: string            // card: entered_review | blocked | failed | done | cancelled | requeued
                           // cron: fired | failed | caught_up
+                          //   fired/caught_up respect the job's allowNotify flag
+                          //   (cronNotifyKind); failed fires always notify
   message: string
   cardID?: string
   jobID?: string

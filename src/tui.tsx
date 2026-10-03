@@ -281,6 +281,15 @@ export default Plugin.define({
         ctx.ui.toast.show({ message: `${job.name} ${job.enabled ? "disabled" : "enabled"}`, variant: "success" })
       }
 
+      const toggleNotify = async () => {
+        const job = jobs()[jobSel()]
+        if (!job) return
+        const allow = job.allowNotify === false
+        await jazz["cron.upsert"]({ name: job.name, cronExpr: job.cronExpr, prompt: job.prompt, ...(job.agent ? { agent: job.agent } : {}), enabled: job.enabled, allowNotify: allow })
+        await refresh()
+        ctx.ui.toast.show({ message: `${job.name} notifications ${allow ? "on" : "muted (failures still notify)"}`, variant: "success" })
+      }
+
       const newJob = async () => {
         const name = await ctx.ui.dialog.prompt({ title: "Cron job name", placeholder: "triage-sweep" })
         if (!name?.trim()) return
@@ -335,6 +344,7 @@ export default Plugin.define({
             // cron view
             { id: "jazz.run", title: "Run cron job now", group: "Jazz", bind: "r", enabled: () => view() === "cron", run: () => void runSelectedJob() },
             { id: "jazz.toggle", title: "Enable/disable cron job", group: "Jazz", bind: "e", enabled: () => view() === "cron", run: () => void toggleJob() },
+            { id: "jazz.notify", title: "Toggle cron notifications", group: "Jazz", bind: "n", enabled: () => view() === "cron", run: () => void toggleNotify() },
             { id: "jazz.newjob", title: "New cron job", group: "Jazz", bind: "shift+n", enabled: () => view() === "cron", run: () => void newJob() },
             // card detail: review verdicts
             { id: "jazz.comment", title: "Comment on card", group: "Jazz", bind: "shift+c", enabled: () => view() === "detail", run: () => void addComment() },
@@ -468,14 +478,14 @@ export default Plugin.define({
           <For each={props.jobs}>
             {(job, i) => (
               <text fg={i() === props.jobSel ? "#7ee787" : undefined}>
-                {`${i() === props.jobSel ? "▸" : " "}${job.enabled ? "●" : "·"} ${job.name.padEnd(20, " ")} [${job.cronExpr}] last ${job.lastRun?.slice(5, 16) ?? "—"} next ${job.nextRun?.slice(5, 16) ?? "—"}`}
+                {`${i() === props.jobSel ? "▸" : " "}${job.enabled ? "●" : "·"} ${job.name.padEnd(20, " ")} [${job.cronExpr}]${job.allowNotify === false ? " muted" : ""} last ${job.lastRun?.slice(5, 16) ?? "—"} next ${job.nextRun?.slice(5, 16) ?? "—"}`}
               </text>
             )}
           </For>
           <Show when={props.jobs.length === 0}>
             <text fg="#666"> no cron jobs — N to create</text>
           </Show>
-          <text fg="#666"> ↑/↓ select · e toggle · r run now · N new · d dashboard</text>
+          <text fg="#666"> ↑/↓ select · e toggle · n notify · r run now · N new · d dashboard</text>
         </box>
       )
     }

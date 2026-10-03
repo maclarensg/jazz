@@ -174,10 +174,15 @@ The TUI: `ctrl+j` or `/board` — lane columns, `←`/`→` lanes, `↑`/`↓` c
 
 ## Cron jobs
 
-Jobs are `{name, cronExpr, prompt, agent?, enabled}` — generic prompt cron.
-A job fires into a fresh session; the scheduler knows nothing about cards.
-Scheduled card work is composition: the job's prompt tells the agent to pull
-a card and call `kanban_work`.
+Jobs are `{name, cronExpr, prompt, agent?, enabled, allowNotify?}` — generic
+prompt cron. A job fires into a fresh session; the scheduler knows nothing
+about cards. Scheduled card work is composition: the job's prompt tells the
+agent to pull a card and call `kanban_work`.
+
+`allowNotify` (default `true`) mutes the inbox notification on fired/caught_up
+— set it to `false` on high-frequency jobs so they don't spam the inbox.
+Failed fires always notify, even when muted. TUI: `n` in the cron view toggles
+it; the row shows `muted` when off.
 
 Plugin options (opencode.jsonc):
 

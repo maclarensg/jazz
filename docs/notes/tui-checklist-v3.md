@@ -162,3 +162,24 @@ New scratch-environment lessons (cost real time — record them):
 5. List-view lane moves log actor `system`, not `gavin` (moveSelected passes
    no actor) — pre-existing; distinguishable from dispatcher moves only by
    the assignments field.
+
+## v3.4 — cron `n` notify toggle (2026-10-03)
+
+Card f71383db: per-job `allowNotify` (default true) — mute fired/caught_up
+inbox notifications for high-frequency jobs; failed fires always notify
+(`cronNotifyKind` seam, routed through by BOTH fireJob notify branches).
+
+| Check | Result |
+|---|---|
+| Cron view footer shows `n notify`; new keybind doesn't collide (`n` was free in cron view; palette-only `jazz.new` is kanban/dash-scoped) | ✅ |
+| Fresh standalone TUI (scratch XDG, staged plugin): shift+N dialog → job `tug` created, row has NO marker (default = notify on) | ✅ |
+| `n` on selected job → toast `tug notifications muted (failures still notify)`, row shows `[*/1 * * * *] muted` | ✅ |
+| `n` again → toast `tug notifications on`, marker gone (round-trip through real server RPC) | ✅ |
+| Toggle preserves `enabled` and `agent` (unlike the older `e` toggle, which drops both — pre-existing, left as-is) | ✅ by code read |
+| Integration (real serve): muted job runNow → run logged + session spawned + NO inbox entry; default job runNow → `fired` notification present | ✅ |
+| Forced-failure e2e is NOT possible: unknown `agent` doesn't throw in switchAgent → fire succeeds. Invariant pinned at `cronNotifyKind` unit seam instead (both branches route through it) | ✅ documented in test |
+| typecheck clean, unit 127/127 | ✅ |
+
+tmux drive note: the documented dialog race bit again — Enter consumed twice
+skipped the Cron-expression dialog silently (empty submit → early return).
+Fix: ≥3s settle after each dialog Enter and capture between phases.
