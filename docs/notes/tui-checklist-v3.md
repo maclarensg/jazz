@@ -114,3 +114,19 @@ single Enter sometimes leaks through a confirm/prompt dialog to the base
 keymap (opens card detail) instead of submitting; a repeated Enter confirms.
 Observed on both the new dialogs and the v2 new-card dialog. Interactive use
 should be unaffected; flagged for an upstream look if it reproduces by hand.
+
+## v3.2 — dispatcher (2026-10-02, afternoon)
+
+| Check | Result |
+|---|---|
+| Planner unit tests red→green (lane pick, open-assignment skip, cooldown, maxInFlight union semantics, priority/age order, disabled, empty lane) | ✅ 8/8 — caught the cap-counts-all-open-assignments design gap before wiring |
+| `JAZZ_DISPATCH=0` env kill-switch; harness opts every integration server out by default, dispatcher test opts in | ✅ |
+| Dispatcher integration (real serve, real session): ready card picked up ≤ tick+slack, assignment recorded | ✅ 16.7s |
+| Full unit 120/120, typecheck clean | ✅ |
+| Integration full run first attempt: link test timed out under file parallelism (two model-heavy suites spawning GLM sessions concurrently; stream stalled past 120s wall). Isolated rerun: 3/3 in 6s → code fine, runner the problem | `--fileParallelism false` on test:integration → 27/27 serial |
+| **Production live smoke**: card `2ed0788b` created → ready at 15:45:15Z; dispatcher picked it up ≤10s (in_progress, profile `worker`, assignment 15:45:25Z); worker ran, `submit_review` by t+25s with report comment; full autonomous loop dispatch→work→review with zero human input | ✅ |
+| Post-smoke board state: review holds `2ed0788b` (Gavin's `x`) + `e3d66282` (BUY_T2 verdict); ready empty; no unintended dispatches (triage/review not dispatchable) | ✅ |
+
+Lesson: model-heavy integration files must run with `--fileParallelism false`
+— parallel real-LLM sessions contend for the provider pool and stall, which
+masquerades as a code regression. Runner fix, not retry-on-flake.

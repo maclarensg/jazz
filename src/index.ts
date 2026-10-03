@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto"
 import { existsSync, readFileSync } from "node:fs"
 import { z } from "zod"
 import { asJsonStorage } from "./storage"
+import { createDispatchState, dispatchableCards, DEFAULT_DISPATCH, type DispatchConfig } from "./dispatch"
 import { BoardError, createBoardService } from "./service"
 import { createInboxService } from "./inbox-service"
 import type { Notification } from "./inbox"
@@ -39,12 +40,25 @@ export default Plugin.define({
   id: "opencode-jazz",
   async setup(ctx) {
     const storage = asJsonStorage(ctx.storage)
-    const options = (ctx.options ?? {}) as { lanes?: unknown }
+    const options = (ctx.options ?? {}) as {
+      lanes?: unknown
+      dispatch?: { enabled?: unknown; cooldownMs?: unknown; maxInFlight?: unknown }
+    }
 
     const lanes =
       Array.isArray(options.lanes) && options.lanes.every((l) => typeof l === "string")
         ? (options.lanes as string[])
         : undefined
+
+    const dispatchCfg: DispatchConfig = {
+      ...DEFAULT_DISPATCH,
+      ...(typeof options.dispatch?.enabled === "boolean" ? { enabled: options.dispatch.enabled } : {}),
+      ...(typeof options.dispatch?.cooldownMs === "number" ? { cooldownMs: options.dispatch.cooldownMs } : {}),
+      ...(typeof options.dispatch?.maxInFlight === "number" ? { maxInFlight: options.dispatch.maxInFlight } : {}),
+      // test isolation: the integration harness opts every server out by default
+      ...(process.env.JAZZ_DISPATCH === "0" ? { enabled: false } : {}),
+    }
+    const dispatchState = createDispatchState()
 
     let emitMoved: ((e: { cardID: string; title: string; fromLane: string; toLane: string }) => Promise<void>) | undefined
     let emitCronFired: ((e: { jobID: string; jobName: string; sessionID: string }) => Promise<void>) | undefined
@@ -500,6 +514,38 @@ export default Plugin.define({
             ...(nextAt ? { nextRun: nextAt } : {}),
           })
         }
+
+        // ---- dispatcher: pull dispatchable ready cards into worker sessions.
+        // Leader-gated by the same lease as cron — one dispatcher per storage.
+        if (dispatchCfg.enabled) {
+          const board = await service.get()
+          // prune in-flight entries whose assignment has closed (card moved on)
+          for (const id of [...dispatchState.inFlight]) {
+            const card = board.cards[id]
+            if (!card?.assignments.some((a) => a.endedAt === undefined)) {
+              dispatchState.inFlight = dispatchState.inFlight.filter((x) => x !== id)
+            }
+          }
+          const picks = dispatchableCards(board, dispatchState, dispatchCfg, now)
+          for (const card of picks) {
+            dispatchState.lastAttempt[card.id] = now.toISOString()
+            dispatchState.inFlight.push(card.id)
+            try {
+              await work({
+                cardID: card.id,
+                prompt: `Work this card autonomously. Read the title${card.details ? " and details" : ""}, do what it asks using your available tools, then kanban_submit_review with a one-paragraph summary.`,
+              })
+            } catch (e) {
+              dispatchState.inFlight = dispatchState.inFlight.filter((x) => x !== card.id)
+              const msg = e instanceof Error ? e.message : String(e)
+              try {
+                await service.comment({ cardID: card.id, author: "system", body: `dispatch failed: ${msg}` })
+              } catch {
+                // card comment is best-effort; the cooldown already prevents hammering
+              }
+            }
+          }
+        }
       } finally {
         ticking = false
       }
@@ -698,6 +744,158 @@ export default Plugin.define({
         execute: async (input) => {
           await boardService.remove(input)
           return { content: `card ${input.cardID} removed` }
+        },
+      })
+
+      // ---- cron tools ----
+      editor.namespace({ name: "cron", description: "opencode-jazz scheduled jobs" })
+
+      editor.add({
+        name: "list_jobs",
+        description: "List scheduled cron jobs with their expressions, enable state, and last/next run times",
+        input: z.object({}),
+        options: { namespace: "cron" },
+        execute: async () => {
+          const jobs = await cronService.list()
+          if (!jobs.length) return { content: "no cron jobs" }
+          return {
+            content: jobs
+              .map(
+                (j) =>
+                  `${j.id} ${j.enabled ? "enabled" : "disabled"} ${j.name} [${j.cronExpr}] agent=${j.agent ?? "—"} last=${j.lastRun ?? "—"} next=${j.nextRun ?? "—"}`,
+              )
+              .join("\n"),
+          }
+        },
+      })
+
+      editor.add({
+        name: "upsert_job",
+        description:
+          "Create or update a scheduled cron job. The prompt is executed by an agent session at each fire — make it self-contained (exact commands, exact card IDs, what to do with the result)",
+        input: z.object({
+          name: z.string().min(1),
+          cronExpr: z.string().min(1),
+          prompt: z.string().min(1),
+          agent: z.string().optional(),
+          enabled: z.boolean().optional(),
+        }),
+        options: { namespace: "cron" },
+        execute: async (input) => {
+          try {
+            const job = await cronService.upsert(input as CronUpsertInput)
+            return { content: `job ${job.name} (${job.id}) saved [${job.cronExpr}] ${job.enabled ? "enabled" : "disabled"}, next ${job.nextRun ?? "—"}` }
+          } catch (e) {
+            if (e instanceof CronError && e.code === "invalid-cron") {
+              return { content: `invalid cron expression: ${input.cronExpr}` }
+            }
+            throw e
+          }
+        },
+      })
+
+      editor.add({
+        name: "remove_job",
+        description: "Remove a scheduled cron job by id (see cron.list_jobs)",
+        input: z.object({ jobID: z.string() }),
+        options: { namespace: "cron" },
+        execute: async (input) => {
+          try {
+            await cronService.remove(input.jobID)
+            return { content: `job ${input.jobID} removed` }
+          } catch (e) {
+            if (e instanceof CronError && e.code === "unknown-job") {
+              return { content: `unknown job: ${input.jobID}` }
+            }
+            throw e
+          }
+        },
+      })
+
+      editor.add({
+        name: "run_now",
+        description: "Fire a scheduled job immediately (spawns its agent session now instead of waiting for the schedule)",
+        input: z.object({ jobID: z.string() }),
+        options: { namespace: "cron" },
+        execute: async (input) => {
+          const job = await cronService.get(input.jobID)
+          if (!job) return { content: `unknown job: ${input.jobID}` }
+          const run = await fireJob(job, false)
+          const nextAt = nextRunISO(job.cronExpr, new Date())
+          await cronService.updateJob(job.id, {
+            lastRun: run.firedAt,
+            ...(nextAt ? { nextRun: nextAt } : {}),
+          })
+          return { content: run.status === "fired" ? `fired ${job.name} -> session ${run.sessionID}` : `${job.name}: ${run.status}` }
+        },
+      })
+
+      editor.add({
+        name: "runs",
+        description: "Recent run log for cron jobs (firedAt, status, session), optionally filtered to one job",
+        input: z.object({ jobID: z.string().optional() }),
+        options: { namespace: "cron" },
+        execute: async (input) => {
+          const runs = await cronService.readRuns()
+          const filtered = input.jobID ? runs.filter((r) => r.jobID === input.jobID) : runs
+          if (!filtered.length) return { content: "no runs recorded" }
+          return {
+            content: filtered
+              .slice(-20)
+              .map((r) => `${r.firedAt} ${r.jobName} ${r.status}${r.sessionID ? ` ${r.sessionID}` : ""}${r.error ? ` ERROR: ${r.error}` : ""}`)
+              .join("\n"),
+          }
+        },
+      })
+
+      // ---- inbox tools ----
+      editor.namespace({ name: "inbox", description: "opencode-jazz notification inbox" })
+
+      editor.add({
+        name: "list",
+        description: "List inbox notifications (newest last), optionally unread-only",
+        input: z.object({ unreadOnly: z.boolean().optional(), limit: z.number().int().optional() }),
+        options: { namespace: "inbox" },
+        execute: async (input) => {
+          const r = await inboxService.list({ ...(input.unreadOnly !== undefined ? { unreadOnly: input.unreadOnly } : {}) })
+          const items = input.limit ? r.notifications.slice(-input.limit) : r.notifications
+          if (!items.length) return { content: `inbox empty (${r.unread} unread)` }
+          return {
+            content: [`${items.length} notification(s), ${r.unread} unread`, ...items.map((n) => `${n.id} ${n.ts} [${n.kind}] ${n.message}`)].join("\n"),
+          }
+        },
+      })
+
+      editor.add({
+        name: "ack",
+        description: "Mark one inbox notification read (stays in the list, dimmed)",
+        input: z.object({ id: z.string().min(1) }),
+        options: { namespace: "inbox" },
+        execute: async (input) => {
+          const r = await inboxService.ack(input.id)
+          return { content: `marked read; ${r.unread} unread remain` }
+        },
+      })
+
+      editor.add({
+        name: "clear",
+        description: "Remove one notification from the inbox entirely (unlike ack, it is gone)",
+        input: z.object({ id: z.string().min(1) }),
+        options: { namespace: "inbox" },
+        execute: async (input) => {
+          const r = await inboxService.clear(input.id)
+          return { content: r.cleared ? `cleared; ${r.unread} unread remain` : `no such notification: ${input.id}` }
+        },
+      })
+
+      editor.add({
+        name: "clear_all",
+        description: "Empty the inbox — removes every notification from the list",
+        input: z.object({}),
+        options: { namespace: "inbox" },
+        execute: async () => {
+          const r = await inboxService.clearAll()
+          return { content: `cleared ${r.cleared} notifications` }
         },
       })
     })

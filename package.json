@@ -10,7 +10,7 @@
   "scripts": {
     "test": "vitest run test/unit",
     "pretest:integration": "bash scripts/stage-plugin.sh",
-    "test:integration": "vitest run test/integration",
+    "test:integration": "vitest run test/integration --fileParallelism false",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

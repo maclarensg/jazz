@@ -52,6 +52,12 @@ export interface JazzServerOptions {
    * leader election (double-instance).
    */
   dataDir?: string
+  /**
+   * Enable the card dispatcher. Default false: most tests move cards through
+   * ready deliberately and must not race a dispatcher grabbing them. Only the
+   * dispatcher integration test turns this on.
+   */
+  dispatch?: boolean
 }
 
 export async function startJazzServer(opts: JazzServerOptions = {}): Promise<JazzServer> {
@@ -74,7 +80,7 @@ export async function startJazzServer(opts: JazzServerOptions = {}): Promise<Jaz
 
   const child = spawn(bin, ["serve", "--hostname", "127.0.0.1", "--port", String(port)], {
     cwd,
-    env: { ...process.env, XDG_CONFIG_HOME: xdgConfig, XDG_DATA_HOME: dataDir },
+    env: { ...process.env, XDG_CONFIG_HOME: xdgConfig, XDG_DATA_HOME: dataDir, ...(opts.dispatch ? {} : { JAZZ_DISPATCH: "0" }) },
     stdio: ["ignore", "pipe", "pipe"],
     // Own process group: worker teardown must not take the server down with it.
     detached: true,

@@ -63,6 +63,34 @@ board.archiveLane (done|cancelled → archive store) · archive.get
 profiles.list/stats · cron.upsert/list/remove/runNow/runs
 ```
 
+Editor tools (in any session): `kanban.*` (12 tools — intake, assign, work,
+handoff, block, comment, submit_review, routing_candidates, move/list/remove),
+`cron.*` (list_jobs, upsert_job, remove_job, run_now, runs), `inbox.*` (list,
+ack, clear, clear_all).
+
+## Dispatcher
+
+The dispatcher pulls dispatchable **ready** cards into worker sessions
+automatically — no cron prompt needed. Enabled by default; runs inside the
+cron tick loop under the same leader lease (one dispatcher per storage).
+Every 15s it picks ready cards with no open worker assignment, ordered by
+priority then age, capped at `maxInFlight` concurrent workers (counting ALL
+open assignments on the board, `kanban_work`-spawned included), with a 60s
+per-card cooldown against hammering. Each pick goes through the normal
+`work()` path: Laya-routed profile, persona-composed prompt, existing exit
+semantics (exit without submit_review → back to ready; second consecutive
+exit → failed — so a re-dispatching dispatcher cannot loop on a broken card).
+Dispatch failures land as a system comment on the card.
+
+Configure via plugin options `{ dispatch: { enabled, cooldownMs, maxInFlight } }`;
+`JAZZ_DISPATCH=0` disables it (the integration harness opts out by default so
+tests that move cards through ready don't race a dispatcher).
+
+**Headless workers need pre-granted permissions.** A dispatched session has
+no human to approve tool asks — a profile whose `bash` permission isn't
+pre-allowed for the commands it needs wedges exactly like an unanswered
+permission dialog. Scope allow patterns to the work the profile does.
+
 TUI (`ctrl+j` or `/board`): 3-pane dashboard; `i` inbox, `c` cron, `k` kanban
 full views; kanban navigation is arrow-only (`←`/`→` lanes, `↑`/`↓` cards,
 selected lane highlighted); `H`/`L` move the selected card between lanes,
