@@ -81,6 +81,22 @@ export function cronRunRing<T>(runs: T[], entry: T, cap = RUN_RING_CAP): T[] {
   return [...runs, entry].slice(-cap)
 }
 
+export type CronNotifyKind = "fired" | "caught_up" | "failed"
+
+/**
+ * Which inbox notification a fire attempt should push, if any. fired/caught_up
+ * respect the job's allowNotify flag (mute high-frequency jobs); failures
+ * always notify — a broken job must never go silent.
+ */
+export function cronNotifyKind(
+  job: CronJob,
+  outcome: { ok: boolean; missed?: boolean },
+): CronNotifyKind | null {
+  if (!outcome.ok) return "failed"
+  if (job.allowNotify === false) return null
+  return outcome.missed ? "caught_up" : "fired"
+}
+
 export function leaseAlive(lease: Lease | undefined, instanceID: string, now: number): boolean {
   if (!lease) return false
   if (lease.instanceID !== instanceID) return false

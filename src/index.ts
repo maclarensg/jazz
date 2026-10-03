@@ -8,7 +8,7 @@ import { BoardError, createBoardService } from "./service"
 import { createInboxService } from "./inbox-service"
 import type { Notification } from "./inbox"
 import { createCronService, CronError, type CronUpsertInput } from "./cron-service"
-import { catchupPlan, dueJobs, leaseAlive, nextRunISO, type CatchupPolicy, type CronJob, type CronRun } from "./cron"
+import { catchupPlan, cronNotifyKind, dueJobs, leaseAlive, nextRunISO, type CatchupPolicy, type CronJob, type CronRun } from "./cron"
 import { createLinkRegistry, EXIT_NO_SUBMIT, isTerminalOutcome, OUTCOME_LANES as OUTCOME_LANES_MAP, reviewGuard, transitionLane, type SessionOutcome } from "./link"
 import { createRoutingService } from "./routing-service"
 import { normalizeRegistry, searchProfiles, topCandidates, type RegistryEntry } from "./profiles"
@@ -460,10 +460,11 @@ export default Plugin.define({
         await ctx.session.prompt({ sessionID: session.id, text: job.prompt })
         run.sessionID = session.id
         await emitCronFired?.({ jobID: job.id, jobName: job.name, sessionID: session.id })
-        if (job.allowNotify !== false) {
+        const kind = cronNotifyKind(job, { ok: true, missed })
+        if (kind) {
           await notify({
             source: "cron",
-            kind: missed ? "caught_up" : "fired",
+            kind,
             message: `cron ${job.name} (${job.id}) ${missed ? "caught up" : "fired"} → session ${session.id}`,
             jobID: job.id,
           })
@@ -474,7 +475,8 @@ export default Plugin.define({
         await emitCronFailed?.({ jobID: job.id, jobName: job.name, error: run.error })
         await notify({
           source: "cron",
-          kind: "failed",
+          // failures always notify, even when allowNotify=false (cronNotifyKind)
+          kind: cronNotifyKind(job, { ok: false })!,
           message: `cron ${job.name} (${job.id}) failed: ${run.error}`,
           jobID: job.id,
         })

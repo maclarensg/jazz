@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import {
   catchupPlan,
+  cronNotifyKind,
   cronRunRing,
   dueJobs,
   leaseAlive,
@@ -70,6 +71,26 @@ describe("catchupPlan", () => {
     expect(plan.fire).toEqual([])
     const rescheduled = plan.jobs.find((j) => j.id === "past-2")!
     expect(new Date(rescheduled.nextRun!).getTime()).toBeGreaterThan(T0.getTime())
+  })
+})
+
+describe("cronNotifyKind", () => {
+  it("notifies fired/caught_up by default (flag omitted or true)", () => {
+    expect(cronNotifyKind(job(), { ok: true })).toBe("fired")
+    expect(cronNotifyKind(job({ allowNotify: true }), { ok: true })).toBe("fired")
+    expect(cronNotifyKind(job(), { ok: true, missed: true })).toBe("caught_up")
+    expect(cronNotifyKind(job({ allowNotify: true }), { ok: true, missed: true })).toBe("caught_up")
+  })
+
+  it("suppresses fired/caught_up when allowNotify=false", () => {
+    expect(cronNotifyKind(job({ allowNotify: false }), { ok: true })).toBeNull()
+    expect(cronNotifyKind(job({ allowNotify: false }), { ok: true, missed: true })).toBeNull()
+  })
+
+  it("never suppresses failed — failures notify even when muted", () => {
+    expect(cronNotifyKind(job({ allowNotify: false }), { ok: false })).toBe("failed")
+    expect(cronNotifyKind(job({ allowNotify: true }), { ok: false })).toBe("failed")
+    expect(cronNotifyKind(job(), { ok: false, missed: true })).toBe("failed")
   })
 })
 
