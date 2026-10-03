@@ -86,10 +86,16 @@ Configure via plugin options `{ dispatch: { enabled, cooldownMs, maxInFlight } }
 `JAZZ_DISPATCH=0` disables it (the integration harness opts out by default so
 tests that move cards through ready don't race a dispatcher).
 
-**Headless workers need pre-granted permissions.** A dispatched session has
-no human to approve tool asks — a profile whose `bash` permission isn't
-pre-allowed for the commands it needs wedges exactly like an unanswered
-permission dialog. Scope allow patterns to the work the profile does.
+**Headless workers need pre-granted permissions.** A dispatched or cron-fired
+session has no human to approve asks — and the ask that bites hardest is
+invisible: sessions root at the service's project directory, so any `cd` into
+a sibling project raises `external_directory` (base policy: ask) *before*
+shell rules are even consulted, and headless that means an eternal freeze
+that looks like a hang. Pre-allow `external_directory` for the workspace, and
+give worker profiles V2 `permissions` arrays — note a `shell "*": deny` tail
+hides the shell tool entirely, so prefer narrow allows and accept the base
+fallback. V1-style `permission:`/`bash:` maps in agent frontmatter are
+silently inert in V2.
 
 TUI (`ctrl+j` or `/board`): 3-pane dashboard; `i` inbox, `c` cron, `k` kanban
 full views; kanban navigation is arrow-only (`←`/`→` lanes, `↑`/`↓` cards,
