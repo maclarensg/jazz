@@ -1,4 +1,4 @@
-import type { Card } from "./board"
+import type { AssignmentOutcome, Card } from "./board"
 
 /**
  * Pure link logic: the ONLY coupling between the board and the session world
@@ -80,6 +80,45 @@ export function transitionLane(card: Card, outcome: SessionOutcome): string | nu
   }
   // failed | interrupted
   return card.lane === "failed" ? null : "failed"
+}
+
+/**
+ * What the event pump does for a linked session's outcome, as data.
+ * Extracted from the pump (index.ts) so the assignment-closure rules are
+ * unit-testable; spec'd red in test/unit/link-v2.test.ts (card 36febd0f).
+ *
+ * Contract: the pump closes the open assignment only on transitions it
+ * drives (`target !== null`). Cards Gavin already owns — review/done/
+ * cancelled, or already failed — are left alone here; lane ENTRY into those
+ * lanes is guarded by moveCard's NO_WORKER_LANES auto-close, so a dead
+ * session's claim can never ride into them in the first place (2026-10-03:
+ * done-lane 6787f497 carried a debugger assignment whose session had failed
+ * one second in).
+ */
+export interface OutcomePlan {
+  /** Lane to move the card to, or null to leave it alone (Gavin's lanes). */
+  target: string | null
+  /** When set, close the open assignment with this outcome/detail before the move. */
+  close: { outcome: AssignmentOutcome; detail: string } | null
+  /** When set, append this system comment (the succeeded no-submit bail-out). */
+  comment: string | null
+}
+
+export function planOutcome(card: Card, outcome: SessionOutcome): OutcomePlan {
+  const target = transitionLane(card, outcome)
+  if (!target) return { target: null, close: null, comment: null }
+  const open = card.assignments.some((a) => a.endedAt === undefined)
+  if (outcome === "succeeded") {
+    return {
+      target,
+      close: open ? { outcome: "exited", detail: EXIT_NO_SUBMIT } : null,
+      comment: "Worker session ended without submitting for review.",
+    }
+  }
+  if (outcome === "failed" || outcome === "interrupted") {
+    return { target, close: open ? { outcome: "failed", detail: `worker session ${outcome}` } : null, comment: null }
+  }
+  return { target, close: null, comment: null }
 }
 
 export interface Link {

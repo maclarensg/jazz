@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import { createBoard, createCard, moveCard } from "../../src/board"
-import { createLinkRegistry, canSubmitReview, transitionLane } from "../../src/link"
+import { EXIT_NO_SUBMIT, createLinkRegistry, canSubmitReview, planOutcome, transitionLane } from "../../src/link"
 
 const card = (lane: string) => ({
   id: "c1",
@@ -67,6 +67,53 @@ describe("outcome application over a board", () => {
     board = moveCard(board, "c1", lane!)
     expect(board.lanes["failed"]).toEqual(["c1"])
     expect(board.lanes["backlog"]).toEqual(["c2"])
+  })
+})
+
+describe("planOutcome (assignment-closure rules for the event pump)", () => {
+  const withAssignment = (lane: string) => ({
+    ...card(lane),
+    assignments: [{ profile: "debugger", startedAt: "t0", sessionID: "s-1" }],
+  })
+
+  it("a live session failing closes the assignment — card 6787f497 leak: session failed 1s in, pump moved to failed with the row open", () => {
+    const plan = planOutcome(withAssignment("in_progress"), "failed")
+    expect(plan.target).toBe("failed")
+    expect(plan.close).toEqual({ outcome: "failed", detail: "worker session failed" })
+    expect(plan.comment).toBeNull()
+  })
+
+  it("interrupted closes like failed", () => {
+    const plan = planOutcome(withAssignment("in_progress"), "interrupted")
+    expect(plan.target).toBe("failed")
+    expect(plan.close).toEqual({ outcome: "failed", detail: "worker session interrupted" })
+  })
+
+  it("succeeded without submit closes the assignment as the no-submit bail-out", () => {
+    const plan = planOutcome(withAssignment("in_progress"), "succeeded")
+    expect(plan.target).toBe("ready")
+    expect(plan.close).toEqual({ outcome: "exited", detail: EXIT_NO_SUBMIT })
+    expect(plan.comment).toBe("Worker session ended without submitting for review.")
+  })
+
+  it("cards Gavin owns (moved on while the session was live) are left to the moveCard auto-close guard", () => {
+    // 6787f497 rode failed→ready→done while its dead session's row stayed
+    // open; the pump must not touch Gavin's lanes — NO_WORKER_LANES entry
+    // closes the row instead.
+    for (const lane of ["review", "done", "cancelled", "failed"]) {
+      expect(planOutcome(withAssignment(lane), "failed")).toEqual({ close: null, comment: null, target: null })
+      expect(planOutcome(withAssignment(lane), "succeeded")).toEqual({ close: null, comment: null, target: null })
+    }
+  })
+
+  it("no open assignment — nothing to close, no phantom exits", () => {
+    for (const outcome of ["succeeded", "failed", "interrupted"] as const) {
+      expect(planOutcome(card("in_progress"), outcome).close).toBeNull()
+    }
+  })
+
+  it("started never closes anything", () => {
+    expect(planOutcome(withAssignment("ready"), "started")).toEqual({ close: null, comment: null, target: "in_progress" })
   })
 })
 

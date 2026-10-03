@@ -175,6 +175,17 @@ export function createCard(
 }
 
 /**
+ * Lanes where an open assignment cannot persist: review is Gavin's verdict
+ * gate, and blocked/failed/done/cancelled are outside the work lifecycle —
+ * the complement of reviewGuard's workable set, so a worker claim only makes
+ * sense while the card sits in a lane an agent can act on. moveCard auto-
+ * closes any open assignment entering one of these lanes (2026-10-03:
+ * done-lane 6787f497 carried a dangling open assignment — its session had
+ * failed one second in, and every later move preserved the row).
+ */
+export const NO_WORKER_LANES: readonly string[] = ["review", "blocked", "failed", "done", "cancelled"]
+
+/**
  * Move (or reorder) a card. A lane *change* appends a `moved` history entry;
  * a same-lane reorder only bumps `updated`.
  */
@@ -202,6 +213,16 @@ export function moveCard(
       actor: opts.actor ?? "system",
       from: card.lane,
       to: toLane,
+    })
+  }
+  // Assignment hygiene: a lane change into a no-worker lane auto-closes any
+  // open assignment (outcome "exited") — callers that forget endAssignment
+  // (TUI moves, move_card, review.decide, session outcomes) must not leave a
+  // dead session's claim riding into Gavin's lanes.
+  if (laneChange && NO_WORKER_LANES.includes(toLane) && next.cards[cardID]!.assignments.some((a) => a.endedAt === undefined)) {
+    next = endAssignment(next, cardID, "exited", {
+      actor: opts.actor ?? "system",
+      detail: `auto-closed on move to ${toLane}`,
     })
   }
   return next

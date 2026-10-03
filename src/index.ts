@@ -10,7 +10,7 @@ import type { Notification } from "./inbox"
 import { createCronService, CronError, type CronUpsertInput } from "./cron-service"
 import { catchupPlan, dueJobs, leaseAlive, nextRunISO, type CatchupPolicy, type CronJob } from "./cron"
 import { makeFireJob } from "./cron-fire"
-import { createLinkRegistry, EXIT_NO_SUBMIT, canSubmitReview, isTerminalOutcome, OUTCOME_LANES as OUTCOME_LANES_MAP, reviewGuard, transitionLane, type SessionOutcome } from "./link"
+import { createLinkRegistry, canSubmitReview, isTerminalOutcome, OUTCOME_LANES as OUTCOME_LANES_MAP, planOutcome, reviewGuard, type SessionOutcome } from "./link"
 import { createRoutingService } from "./routing-service"
 import { resolveWorkerAgent } from "./agent-resolve"
 import { normalizeRegistry, searchProfiles, topCandidates, type RegistryEntry } from "./profiles"
@@ -450,25 +450,22 @@ export default Plugin.define({
             registry.drop(sessionID)
             continue
           }
-          const target = transitionLane(card, outcome)
-          // v2: a succeeded session that never submitted for review is not a
-          // verdict — record the bail-out, then return the card (or fail it).
-          if (target && outcome === "succeeded") {
-            if (card.assignments.some((a) => a.endedAt === undefined)) {
-              await service.endWork({
-                cardID: link.cardID,
-                outcome: "exited",
-                actor: card.profile ?? "worker",
-                detail: EXIT_NO_SUBMIT,
-              })
+          const plan = planOutcome(card, outcome)
+          // The pump closes the open assignment only on transitions it
+          // drives (spec: link-v2.test.ts); lane entry into Gavin's lanes is
+          // moveCard's NO_WORKER_LANES guard. Tolerate a concurrent close —
+          // the pump must survive it.
+          if (plan.close) {
+            try {
+              await service.endWork({ cardID: link.cardID, outcome: plan.close.outcome, actor: card.profile ?? "worker", detail: plan.close.detail })
+            } catch (e) {
+              if (!(e instanceof BoardError && e.code === "no-open-assignment")) throw e
             }
-            await service.comment({
-              cardID: link.cardID,
-              author: "system",
-              body: "Worker session ended without submitting for review.",
-            })
           }
-          if (target) await service.move({ cardID: link.cardID, lane: target, actor: "system" })
+          if (plan.comment) {
+            await service.comment({ cardID: link.cardID, author: "system", body: plan.comment })
+          }
+          if (plan.target) await service.move({ cardID: link.cardID, lane: plan.target, actor: "system" })
           if (isTerminalOutcome(outcome)) registry.drop(sessionID)
         }
       } catch (e) {

@@ -153,6 +153,60 @@ describe("board v2 — assignments", () => {
     const b = createCard(createBoard(), { title: "t" }, () => "c1").board
     expect(() => endAssignment(b, "c1", "exited")).toThrowError(/no open assignment/i)
   })
+
+  it("endAssignment marks the outcome on the closed row", () => {
+    let b = createCard(createBoard(), { title: "t" }, () => "c1").board
+    b = startAssignment(b, "c1", "debugger", { actor: "laya" })
+    b = endAssignment(b, "c1", "exited", { detail: "data fix" })
+    expect(b.cards["c1"]!.assignments[0]).toMatchObject({ outcome: "exited", endedAt: expect.any(String) })
+  })
+})
+
+describe("board v2 — moveCard assignment hygiene", () => {
+  it("auto-closes an open assignment when the card enters a no-worker lane (done) — card 6787f497 regression", () => {
+    let b = createCard(createBoard(), { title: "t" }, () => "c1").board
+    b = startAssignment(b, "c1", "debugger", { sessionID: "s-1", actor: "laya" })
+    b = moveCard(b, "c1", "in_progress")
+    b = moveCard(b, "c1", "done", undefined, { actor: "gavin" })
+    const a = b.cards["c1"]!.assignments[0]!
+    expect(a.endedAt).toBeDefined()
+    expect(a.outcome).toBe("exited")
+    expect(b.cards["c1"]!.history.map((h) => h.kind)).toEqual(["created", "assigned", "moved", "moved", "exit"])
+    expect(b.cards["c1"]!.history.at(-1)).toMatchObject({ detail: "auto-closed on move to done" })
+  })
+
+  it("every no-worker lane closes the claim", () => {
+    for (const lane of ["review", "blocked", "failed", "done", "cancelled"]) {
+      let b = createCard(createBoard(), { title: "t" }, () => "c1").board
+      b = startAssignment(b, "c1", "debugger", { actor: "laya" })
+      b = moveCard(b, "c1", "in_progress")
+      b = moveCard(b, "c1", lane)
+      expect(b.cards["c1"]!.assignments.some((a) => a.endedAt === undefined)).toBe(false)
+    }
+  })
+
+  it("workable lanes never auto-close — a live worker keeps its claim", () => {
+    for (const lane of ["triage", "backlog", "ready", "in_progress"]) {
+      let b = createCard(createBoard(), { title: "t" }, () => "c1").board
+      b = startAssignment(b, "c1", "debugger", { actor: "laya" })
+      if (lane !== "triage") b = moveCard(b, "c1", lane)
+      expect(b.cards["c1"]!.assignments.some((a) => a.endedAt === undefined)).toBe(true)
+    }
+  })
+
+  it("same-lane reorders do not touch assignments", () => {
+    let b = createCard(createBoard(), { title: "t", lane: "ready" }, () => "c1").board
+    b = startAssignment(b, "c1", "debugger", { actor: "laya" })
+    b = moveCard(b, "c1", "ready", 0)
+    expect(b.cards["c1"]!.assignments.some((a) => a.endedAt === undefined)).toBe(true)
+  })
+
+  it("moving a card without an assignment into a no-worker lane is a clean no-op", () => {
+    let b = createCard(createBoard(), { title: "t" }, () => "c1").board
+    expect(() => moveCard(b, "c1", "done")).not.toThrow()
+    b = moveCard(b, "c1", "done")
+    expect(b.cards["c1"]!.assignments).toEqual([])
+  })
 })
 
 describe("board v2 — assignProfile", () => {
