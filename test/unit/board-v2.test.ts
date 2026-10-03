@@ -169,6 +169,44 @@ describe("board v2 — assignProfile", () => {
   it("throws on unknown card", () => {
     expect(() => assignProfile(createBoard(), "nope", "x")).toThrowError(BoardError)
   })
+
+  it("refuses to route a card with an open assignment — no concurrent routing over a live worker", () => {
+    // live incident 2026-10-03T08:39:10Z: a sweep routed sre-devops over card
+    // fc0a2fb6 while tooling-engineer's session had the assignment open
+    let b = createCard(createBoard(), { title: "t" }, () => "c1").board
+    b = startAssignment(b, "c1", "tooling-engineer", { sessionID: "s-1", actor: "laya" })
+    b = moveCard(b, "c1", "in_progress")
+    expect(() => assignProfile(b, "c1", "sre-devops", { actor: "sweep" })).toThrowError(BoardError)
+    expect(() => assignProfile(b, "c1", "sre-devops", { actor: "sweep" })).toThrowError(/open assignment/i)
+    expect(b.cards["c1"]!.profile).toBe("tooling-engineer")
+    expect(b.cards["c1"]!.history.at(-1)!.kind).not.toBe("routed")
+  })
+
+  it("refuses to route cards outside triage/ready", () => {
+    const b = createCard(createBoard(), { title: "t" }, () => "c1").board
+    for (const lane of ["backlog", "in_progress", "blocked", "review", "done", "cancelled", "failed"]) {
+      const moved = moveCard(b, "c1", lane)
+      expect(() => assignProfile(moved, "c1", "sre-devops", { actor: "sweep" })).toThrowError(/triage\/ready|lane/i)
+    }
+  })
+
+  it("routes in triage and ready — the legal routing lanes", () => {
+    let b = createCard(createBoard(), { title: "t" }, () => "c1").board
+    b = assignProfile(b, "c1", "swe-backend") // triage
+    expect(b.cards["c1"]!.profile).toBe("swe-backend")
+    b = moveCard(b, "c1", "ready")
+    b = assignProfile(b, "c1", "qa-core", { priority: 1 }) // ready
+    expect(b.cards["c1"]!.profile).toBe("qa-core")
+  })
+
+  it("routes again once the assignment has ended (handoff closes, then routing proceeds)", () => {
+    let b = createCard(createBoard(), { title: "t" }, () => "c1").board
+    b = startAssignment(b, "c1", "tooling-engineer", { actor: "laya" })
+    b = moveCard(b, "c1", "in_progress")
+    b = endAssignment(b, "c1", "handoff", { actor: "tooling-engineer" })
+    b = moveCard(b, "c1", "ready")
+    expect(() => assignProfile(b, "c1", "qa-core", { actor: "system" })).not.toThrow()
+  })
 })
 
 describe("board v2 — migration from v1", () => {

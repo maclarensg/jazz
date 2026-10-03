@@ -405,8 +405,10 @@ export default Plugin.define({
         await service.endWork({ cardID: input.cardID, outcome: "handoff", actor, detail: `→ ${input.toProfile}` })
       }
       if (input.note) await service.comment({ cardID: input.cardID, author: actor, body: input.note })
-      await service.assign({ cardID: input.cardID, profile: input.toProfile, actor })
+      // assignProfile only routes in triage/ready — return the card to ready
+      // (assignment closed above) BEFORE setting the handoff target profile
       const moved = await service.move({ cardID: input.cardID, lane: "ready", actor })
+      await service.assign({ cardID: input.cardID, profile: input.toProfile, actor })
       return { moved, reason: "handoff" }
     }
 
@@ -612,6 +614,15 @@ export default Plugin.define({
         }),
         options: { namespace: "kanban" },
         execute: async (input) => {
+          // assign first: only routes that took effect enter the calibration
+          // log — a refused assign (open assignment / non-routing lane) must
+          // not stamp a phantom "assigned" decision
+          const card = await boardService.assign({
+            cardID: input.cardID,
+            profile: input.profile,
+            actor: "laya",
+            ...(input.priority !== undefined ? { priority: input.priority } : {}),
+          })
           await routingService.record({
             cardID: input.cardID,
             stage: input.stage ?? "profile",
@@ -620,12 +631,6 @@ export default Plugin.define({
             ...(input.confidence !== undefined ? { confidence: input.confidence } : {}),
             ...(input.reason ? { reason: input.reason } : {}),
             outcome: "assigned",
-          })
-          const card = await boardService.assign({
-            cardID: input.cardID,
-            profile: input.profile,
-            actor: "laya",
-            ...(input.priority !== undefined ? { priority: input.priority } : {}),
           })
           return { content: `card ${card.id} assigned to ${input.profile} (now ${card.lane})` }
         },

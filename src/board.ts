@@ -71,7 +71,8 @@ export class BoardError extends Error {
       | "bad-source"
       | "bad-comment"
       | "assignment-open"
-      | "no-open-assignment",
+      | "no-open-assignment"
+      | "bad-lane",
     message: string,
   ) {
     super(message)
@@ -355,9 +356,23 @@ export function endAssignment(
 }
 
 /**
+ * Lanes where profile routing is legal. Routing sets the NEXT profile for a
+ * card; once a card leaves the routing lanes the lifecycle (assignment, review,
+ * terminal states) owns it — a concurrent router must not rewrite it.
+ */
+export const ROUTABLE_LANES: readonly string[] = ["triage", "ready"]
+
+/**
  * Set the next profile for a card (triage assignment or handoff target).
  * Does NOT open an assignment — that happens when a worker session starts
  * (kanban_work). Records a `routed` history entry; optionally retunes priority.
+ *
+ * Guards (same discipline as startAssignment):
+ * - refuses when the card has an open assignment — a live worker owns the
+ *   profile field; routing over it is the 2026-10-03 fc0a2fb6 incident
+ *   (a sweep routed sre-devops over a running tooling-engineer assignment)
+ * - refuses outside triage/ready — only the routing lanes accept new profiles;
+ *   handoff closes the assignment and returns the card to ready before routing
  */
 export function assignProfile(
   board: BoardState,
@@ -366,6 +381,12 @@ export function assignProfile(
   opts: { actor?: string; priority?: Priority } = {},
 ): BoardState {
   const card = requireCard(board, cardID)
+  if (card.assignments.some((a) => a.endedAt === undefined)) {
+    throw new BoardError("assignment-open", `card ${cardID} has an open assignment — end it (handoff/exit) before routing a new profile`)
+  }
+  if (!ROUTABLE_LANES.includes(card.lane)) {
+    throw new BoardError("bad-lane", `card ${cardID} is in ${card.lane} — profiles route only in triage/ready`)
+  }
   const next: Card = {
     ...card,
     profile,

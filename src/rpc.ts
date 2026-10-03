@@ -172,6 +172,7 @@ export const JazzRpc = Rpc.define({
             status: z.string(),
             error: z.string().optional(),
             missed: z.boolean().optional(),
+            note: z.string().optional(),
           }),
         ),
       }),
