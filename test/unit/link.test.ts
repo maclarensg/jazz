@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import { createBoard, createCard, moveCard } from "../../src/board"
-import { createLinkRegistry, transitionLane } from "../../src/link"
+import { createLinkRegistry, canSubmitReview, transitionLane } from "../../src/link"
 
 const card = (lane: string) => ({
   id: "c1",
@@ -67,5 +67,36 @@ describe("outcome application over a board", () => {
     board = moveCard(board, "c1", lane!)
     expect(board.lanes["failed"]).toEqual(["c1"])
     expect(board.lanes["backlog"]).toEqual(["c2"])
+  })
+})
+
+describe("canSubmitReview (card 592b2b2c: cron monitor submit)", () => {
+  const submittable = (lane: string, source: "manual" | "cron" | "session" | "requeue") => ({
+    lane,
+    source,
+  })
+
+  it("workers submit from in_progress regardless of source", () => {
+    expect(canSubmitReview(submittable("in_progress", "manual"))).toBe(true)
+    expect(canSubmitReview(submittable("in_progress", "cron"))).toBe(true)
+    expect(canSubmitReview(submittable("in_progress", "session"))).toBe(true)
+  })
+
+  it("cron monitor cards submit straight from ready — an actionable signal is the deliverable", () => {
+    expect(canSubmitReview(submittable("ready", "cron"))).toBe(true)
+  })
+
+  it("everything else is worker-only: no ready submit for non-cron sources, none from triage/backlog", () => {
+    expect(canSubmitReview(submittable("ready", "manual"))).toBe(false)
+    expect(canSubmitReview(submittable("ready", "session"))).toBe(false)
+    expect(canSubmitReview(submittable("ready", "requeue"))).toBe(false)
+    expect(canSubmitReview(submittable("triage", "cron"))).toBe(false)
+    expect(canSubmitReview(submittable("backlog", "cron"))).toBe(false)
+  })
+
+  it("review and terminal lanes are never submittable — that is Gavin's gate", () => {
+    expect(canSubmitReview(submittable("review", "cron"))).toBe(false)
+    expect(canSubmitReview(submittable("done", "cron"))).toBe(false)
+    expect(canSubmitReview(submittable("failed", "cron"))).toBe(false)
   })
 })

@@ -124,3 +124,52 @@ describe("fireJob agent resolution (card fc0a2fb6)", () => {
     expect(run.status).toBe("fired")
   })
 })
+
+describe("fireJob fire timeout (card 592b2b2c follow-up)", () => {
+  it("a stalled fire records one timeout run, notifies, and returns — the tick is never wedged", async () => {
+    const f = io()
+    f.prompt = () => new Promise(() => {}) // never settles — the 2026-10-02 stall
+    const fire = makeFireJob({ ...f, fireTimeoutMs: 20 })
+    const run = await fire(job(), false)
+
+    expect(run.status).toBe("error")
+    expect(run.error).toContain("fire timeout after 20ms")
+    expect(run.error).toContain("may still complete")
+    expect(f.runs).toHaveLength(1)
+    expect(f.notifications.map((n) => n.kind)).toEqual(["failed"])
+  })
+
+  it("the straggler's late completion adds no second run or notification", async () => {
+    const f = io()
+    let release!: () => void
+    f.prompt = () => new Promise<void>((r) => (release = r))
+    const fire = makeFireJob({ ...f, fireTimeoutMs: 10 })
+    const run = await fire(job(), false)
+    expect(run.status).toBe("error")
+
+    release() // the wedged prompt finally settles
+    await new Promise((r) => setTimeout(r, 10)) // let the straggler body run out
+
+    expect(f.runs).toHaveLength(1)
+    expect(f.notifications.map((n) => n.kind)).toEqual(["failed"])
+  })
+
+  it("a fire inside the budget is untouched: fired, one run, fired notification", async () => {
+    const f = io()
+    const fire = makeFireJob({ ...f, fireTimeoutMs: 5_000 })
+    const run = await fire(job(), false)
+
+    expect(run.status).toBe("fired")
+    expect(f.runs).toHaveLength(1)
+    expect(f.notifications.map((n) => n.kind)).toEqual(["fired"])
+  })
+
+  it("no budget configured: legacy semantics, even when the fire never returns", async () => {
+    const f = io()
+    f.prompt = () => new Promise(() => {})
+    const fire = makeFireJob(f) // fireTimeoutMs unset
+    const runaway = fire(job(), false)
+    const firstSettled = await Promise.race([runaway, Promise.resolve("tick-would-hang")])
+    expect(firstSettled).toBe("tick-would-hang")
+  })
+})

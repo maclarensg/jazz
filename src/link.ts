@@ -34,6 +34,22 @@ export function reviewGuard(lane: string): boolean {
 }
 
 /**
+ * Who may submit a card to review (Gavin's verdict gate)?
+ *
+ * - a worker exits from `in_progress` — the normal submit path, after which
+ *   its open assignment is closed;
+ * - a cron-sourced monitor card straight from `ready` — monitors never enter
+ *   the work lifecycle (no worker claims them); an actionable signal IS the
+ *   deliverable, and forcing a fictional in_progress claim makes the daily
+ *   submit fail with "card is not in_progress" (seen 2026-10-03, card
+ *   3b1e83a2). Everything else stays worker-only.
+ */
+export function canSubmitReview(card: Pick<Card, "lane" | "source">): boolean {
+  if (card.lane === "in_progress") return true
+  return card.lane === "ready" && card.source === "cron"
+}
+
+/**
  * Count trailing no-submit exits in history. Comments do not break the run
  * (a human remark between two bail-outs doesn't reset the worker's streak);
  * any other lifecycle entry (assignment, move, review…) does.

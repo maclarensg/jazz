@@ -10,7 +10,7 @@ import type { Notification } from "./inbox"
 import { createCronService, CronError, type CronUpsertInput } from "./cron-service"
 import { catchupPlan, dueJobs, leaseAlive, nextRunISO, type CatchupPolicy, type CronJob } from "./cron"
 import { makeFireJob } from "./cron-fire"
-import { createLinkRegistry, EXIT_NO_SUBMIT, isTerminalOutcome, OUTCOME_LANES as OUTCOME_LANES_MAP, reviewGuard, transitionLane, type SessionOutcome } from "./link"
+import { createLinkRegistry, EXIT_NO_SUBMIT, canSubmitReview, isTerminalOutcome, OUTCOME_LANES as OUTCOME_LANES_MAP, reviewGuard, transitionLane, type SessionOutcome } from "./link"
 import { createRoutingService } from "./routing-service"
 import { resolveWorkerAgent } from "./agent-resolve"
 import { normalizeRegistry, searchProfiles, topCandidates, type RegistryEntry } from "./profiles"
@@ -18,6 +18,11 @@ import { JazzRpc } from "./rpc"
 
 const TICK_MS = 15_000
 const LEASE_MS = 30_000
+/** Max wall-clock for one cron fire (create→switch→prompt). Bounds the 2026-10-02
+ * failure mode where a stalled model stream held the tick ~3h. Must exceed the
+ * longest legitimate fire — invest-daily-check's dispatch script allows 300s
+ * internally, plus its own model turns. */
+const FIRE_TIMEOUT_MS = 10 * 60_000
 /** Max assignment hops per card before it goes to failed (design §6 loop guards). */
 const HANDOFF_CAP = 6
 
@@ -380,7 +385,11 @@ export default Plugin.define({
 
     const submitReview = async (input: { cardID: string; summary: string }) => {
       const card = await requireWorkableCard(input.cardID)
-      if (card.lane !== "in_progress") throw new Error(`card ${input.cardID} is not in_progress (${card.lane})`)
+      // Workers submit from in_progress; cron monitor cards (source "cron")
+      // submit straight from ready — see canSubmitReview in link.ts.
+      if (!canSubmitReview(card)) {
+        throw new Error(`card ${input.cardID} is not submittable from ${card.lane} (source ${card.source})`)
+      }
       const actor = card.profile ?? "worker"
       if (card.assignments.some((a) => a.endedAt === undefined)) {
         await service.endWork({ cardID: input.cardID, outcome: "submitted", actor })
@@ -486,6 +495,7 @@ export default Plugin.define({
       runtimeAgentIds,
       appendRun: (run) => cronService.appendRun(run),
       notify,
+      fireTimeoutMs: FIRE_TIMEOUT_MS,
       // late-bound on purpose: emitCronFired/emitCronFailed are let-bound
       // during setup — preserve the original call-time dereference
       onFired: (e) => emitCronFired?.(e),
