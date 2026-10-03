@@ -7,6 +7,8 @@ export interface CronJob {
   prompt: string
   agent?: string
   enabled: boolean
+  /** Push inbox notifications on fired/caught_up? Failures always notify. Default true. */
+  allowNotify?: boolean
   /** ISO timestamp of the next scheduled fire. */
   nextRun?: string
   /** ISO timestamp of the last completed fire attempt. */

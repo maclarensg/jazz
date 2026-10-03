@@ -16,6 +16,7 @@ export interface CronUpsertInput {
   prompt: string
   agent?: string
   enabled?: boolean
+  allowNotify?: boolean
 }
 
 export const JOBS_KEY = "cron/jobs"
@@ -39,6 +40,9 @@ function validateJobs(value: unknown): CronJob[] {
       if (typeof raw[field] !== "string") throw new Error(`cron job missing string field ${field}`)
     }
     if (typeof raw.enabled !== "boolean") throw new Error("cron job missing boolean enabled")
+    if (raw.allowNotify !== undefined && typeof raw.allowNotify !== "boolean") {
+      throw new Error("cron job allowNotify must be a boolean when present")
+    }
     return raw as unknown as CronJob
   })
 }
@@ -100,6 +104,7 @@ export function createCronService(storage: JsonStorage, deps: CronServiceDeps = 
           prompt: input.prompt,
           ...(input.agent !== undefined ? { agent: input.agent } : {}),
           enabled: input.enabled ?? existing?.enabled ?? true,
+          allowNotify: input.allowNotify ?? existing?.allowNotify ?? true,
           ...(nextAt ? { nextRun: nextAt } : {}),
           ...(existing?.lastRun ? { lastRun: existing.lastRun } : {}),
         }

@@ -86,6 +86,7 @@ export const cronJobSchema = z.object({
   prompt: z.string(),
   agent: z.string().optional(),
   enabled: z.boolean(),
+  allowNotify: z.boolean().optional(),
   nextRun: z.string().optional(),
   lastRun: z.string().optional(),
 })
@@ -133,6 +134,7 @@ export const JazzRpc = Rpc.define({
         prompt: z.string().min(1),
         agent: z.string().optional(),
         enabled: z.boolean().optional(),
+        allowNotify: z.boolean().optional(),
       }),
       output: cronJobSchema,
       errors: {

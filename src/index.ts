@@ -460,12 +460,14 @@ export default Plugin.define({
         await ctx.session.prompt({ sessionID: session.id, text: job.prompt })
         run.sessionID = session.id
         await emitCronFired?.({ jobID: job.id, jobName: job.name, sessionID: session.id })
-        await notify({
-          source: "cron",
-          kind: missed ? "caught_up" : "fired",
-          message: `cron ${job.name} (${job.id}) ${missed ? "caught up" : "fired"} → session ${session.id}`,
-          jobID: job.id,
-        })
+        if (job.allowNotify !== false) {
+          await notify({
+            source: "cron",
+            kind: missed ? "caught_up" : "fired",
+            message: `cron ${job.name} (${job.id}) ${missed ? "caught up" : "fired"} → session ${session.id}`,
+            jobID: job.id,
+          })
+        }
       } catch (e) {
         run.status = "error"
         run.error = e instanceof Error ? e.message : String(e)
@@ -752,7 +754,7 @@ export default Plugin.define({
 
       editor.add({
         name: "list_jobs",
-        description: "List scheduled cron jobs with their expressions, enable state, and last/next run times",
+        description: "List scheduled cron jobs with their expressions, enable and notify state, and last/next run times",
         input: z.object({}),
         options: { namespace: "cron" },
         execute: async () => {
@@ -762,7 +764,7 @@ export default Plugin.define({
             content: jobs
               .map(
                 (j) =>
-                  `${j.id} ${j.enabled ? "enabled" : "disabled"} ${j.name} [${j.cronExpr}] agent=${j.agent ?? "—"} last=${j.lastRun ?? "—"} next=${j.nextRun ?? "—"}`,
+                  `${j.id} ${j.enabled ? "enabled" : "disabled"} ${j.name} [${j.cronExpr}] agent=${j.agent ?? "—"} notify=${j.allowNotify === false ? "muted" : "on"} last=${j.lastRun ?? "—"} next=${j.nextRun ?? "—"}`,
               )
               .join("\n"),
           }
@@ -772,19 +774,20 @@ export default Plugin.define({
       editor.add({
         name: "upsert_job",
         description:
-          "Create or update a scheduled cron job. The prompt is executed by an agent session at each fire — make it self-contained (exact commands, exact card IDs, what to do with the result)",
+          "Create or update a scheduled cron job. The prompt is executed by an agent session at each fire — make it self-contained (exact commands, exact card IDs, what to do with the result). Set allowNotify=false on high-frequency jobs to mute fired/caught_up inbox notifications (failures still notify)",
         input: z.object({
           name: z.string().min(1),
           cronExpr: z.string().min(1),
           prompt: z.string().min(1),
           agent: z.string().optional(),
           enabled: z.boolean().optional(),
+          allowNotify: z.boolean().optional(),
         }),
         options: { namespace: "cron" },
         execute: async (input) => {
           try {
             const job = await cronService.upsert(input as CronUpsertInput)
-            return { content: `job ${job.name} (${job.id}) saved [${job.cronExpr}] ${job.enabled ? "enabled" : "disabled"}, next ${job.nextRun ?? "—"}` }
+            return { content: `job ${job.name} (${job.id}) saved [${job.cronExpr}] ${job.enabled ? "enabled" : "disabled"}, notify ${job.allowNotify === false ? "muted" : "on"}, next ${job.nextRun ?? "—"}` }
           } catch (e) {
             if (e instanceof CronError && e.code === "invalid-cron") {
               return { content: `invalid cron expression: ${input.cronExpr}` }

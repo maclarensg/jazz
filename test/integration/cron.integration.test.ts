@@ -108,3 +108,80 @@ describe("cron over a real serve", () => {
     await expect(primary.jazz["cron.remove"]({ jobID: job.id })).rejects.toThrow()
   })
 })
+
+describe("cron allowNotify (real server)", () => {
+  const runNowAndWait = async (jobID: string) => {
+    await primary.jazz["cron.runNow"]({ jobID })
+    // runNow awaits the fire, but poll briefly for the run ring anyway.
+    const deadline = Date.now() + 15_000
+    let runs: Array<{ status: string; sessionID?: string; error?: string }> = []
+    while (Date.now() < deadline) {
+      const runDoc = await primary.jazz["cron.runs"]({ jobID })
+      runs = runDoc.runs as typeof runs
+      if (runs.length >= 1) return runs
+      await new Promise((r) => setTimeout(r, 1000))
+    }
+    return runs
+  }
+
+  const cronNotifications = async () => {
+    const { notifications } = await primary.jazz["inbox.list"]({})
+    return (notifications as Array<{ source: string; jobID?: string; kind: string; message: string }>).filter((n) => n.source === "cron")
+  }
+
+  it("mutes fired notifications when allowNotify=false — run and session still happen", async () => {
+    const name = `mute-${randomUUID().slice(0, 8)}`
+    const job = await primary.jazz["cron.upsert"]({
+      name,
+      cronExpr: "0 3 * * *",
+      prompt: "Reply with the single word ok and nothing else.",
+      allowNotify: false,
+    })
+    expect(job.allowNotify).toBe(false)
+
+    const runs = await runNowAndWait(job.id)
+    expect(runs[0]!.status).toBe("fired")
+    expect(runs[0]!.sessionID).toBeDefined()
+
+    const notifications = await cronNotifications()
+    expect(notifications.some((n) => n.jobID === job.id)).toBe(false)
+  })
+
+  it("keeps notifying for default jobs (allowNotify omitted)", async () => {
+    const name = `loud-${randomUUID().slice(0, 8)}`
+    const job = await primary.jazz["cron.upsert"]({
+      name,
+      cronExpr: "0 3 * * *",
+      prompt: "Reply with the single word ok and nothing else.",
+    })
+    expect(job.allowNotify).toBe(true)
+
+    const runs = await runNowAndWait(job.id)
+    expect(runs[0]!.status).toBe("fired")
+
+    const notifications = await cronNotifications()
+    const mine = notifications.find((n) => n.jobID === job.id)
+    expect(mine).toBeDefined()
+    expect(mine!.kind).toBe("fired")
+    expect(mine!.message).toContain(name)
+  })
+
+  it("still notifies on a failed fire even when allowNotify=false", async () => {
+    const name = `mutefail-${randomUUID().slice(0, 8)}`
+    const job = await primary.jazz["cron.upsert"]({
+      name,
+      cronExpr: "0 3 * * *",
+      prompt: "x",
+      allowNotify: false,
+      agent: "no-such-agent-xyz",
+    })
+
+    const runs = await runNowAndWait(job.id)
+    expect(runs[0]!.status).toBe("error")
+
+    const notifications = await cronNotifications()
+    const mine = notifications.find((n) => n.jobID === job.id)
+    expect(mine).toBeDefined()
+    expect(mine!.kind).toBe("failed")
+  })
+})
