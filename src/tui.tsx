@@ -542,12 +542,6 @@ export default Plugin.define({
       const c = props.card
       const last = <T,>(arr: T[], n: number) => [...arr].slice(-n).reverse()
       const hist = (h: HistoryEntry) => `${h.ts.slice(5, 16)} ${h.kind.padEnd(9, " ")} ${h.actor.padEnd(12, " ")} ${h.detail ?? ""}${h.from ? ` ${h.from}→${h.to}` : ""}`
-      const verdicts =
-        c.lane === "review"
-          ? "a done · X cancel · R requeue"
-          : c.lane === "failed"
-            ? "X cancel · R requeue"
-            : "verdict keys apply from review (or failed) lane"
       const decidable = c.lane === "review" || c.lane === "failed"
       return (
         <box style={{ flexDirection: "column", flexGrow: 1 }}>
@@ -580,15 +574,11 @@ export default Plugin.define({
             </box>
           </box>
           <Show when={decidable}>
-            <box style={{ flexDirection: "column", border: true, borderColor: "#d29922" }} title=" verdict — decide this card ">
-              <Show when={c.lane === "review"}>
-                <text fg="#7ee787" wrapMode="none">{`  a  mark done`}</text>
-              </Show>
-              <text fg="#f85149" wrapMode="none">{`  X  cancel  (→ cancelled)`}</text>
-              <text fg="#d29922" wrapMode="none">{`  R  requeue to triage  (rework — post a comment first: p)`}</text>
+            <box style={{ border: true, borderColor: "#d29922" }} title=" verdict ">
+              <text wrapMode="none">{c.lane === "review" ? " a done · X cancel · R requeue for rework" : " X cancel · R requeue for rework"}</text>
             </box>
           </Show>
-          <text fg="#666">{` p comment · ${verdicts} · d dashboard`}</text>
+          <text fg="#666"> p comment · d dashboard</text>
         </box>
       )
     }
