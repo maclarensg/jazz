@@ -1,6 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 import { Plugin, usePlugin } from "@opencode/plugin/tui"
-import { For, Show, createSignal, onCleanup, onMount } from "solid-js"
+import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js"
 
 import type { BoardState, Card, HistoryEntry } from "./board"
 import type { CronJob } from "./cron"
@@ -17,7 +17,7 @@ import { JazzRpc } from "./rpc"
  * Moving a card is an explicit shift key (H/L) — navigation can never mutate
  * a board (see tui-checklist-v2.md for the race that motivated this).
  */
-type View = "dash" | "inbox" | "cron" | "kanban" | "detail"
+type View = "dash" | "inbox" | "cron" | "kanban" | "detail" | "msg"
 
 export default Plugin.define({
   id: "opencode-jazz-tui",
@@ -81,6 +81,7 @@ export default Plugin.define({
 
 
       const [view, setView] = createSignal<View>("dash")
+      const [detailScroll, setDetailScroll] = createSignal(0)
       const [board, setBoard] = createSignal<BoardState | null>(null)
       const [jobs, setJobs] = createSignal<CronJob[]>([])
       const [notifications, setNotifications] = createSignal<Notification[]>([])
@@ -108,6 +109,8 @@ export default Plugin.define({
         const b = board()
         return id && b ? (b.cards[id] ?? null) : null
       }
+      const currentNotification = (): Notification | null => unreadFirst()[inboxSel()] ?? null
+      const boardCard = (id: string): Card | null => board()?.cards[id] ?? null
 
       const refresh = async () => {
         try {
@@ -343,7 +346,12 @@ export default Plugin.define({
             { id: "jazz.cron", title: "Jazz cron", group: "Jazz", bind: "c", enabled: () => view() !== "detail" && view() !== "inbox", run: () => { setJobSel(0); setView("cron") } },
             { id: "jazz.kanban", title: "Jazz kanban", group: "Jazz", bind: "k", enabled: () => view() !== "detail", run: () => setView("kanban") },
             { id: "jazz.dash", title: "Jazz dashboard", group: "Jazz", bind: "d", enabled: () => view() !== "dash", run: () => setView("dash") },
-            { id: "jazz.back", title: "Jazz back/dashboard", group: "Jazz", bind: "escape", enabled: () => view() !== "dash", run: () => setView("dash") },
+            { id: "jazz.back", title: "Jazz back/dashboard", group: "Jazz", bind: "escape", enabled: () => view() !== "dash" && view() !== "msg", run: () => setView("dash") },
+            // message detail view
+            { id: "jazz.msgback", title: "Back to inbox", group: "Jazz", bind: "escape", enabled: () => view() === "msg", run: () => setView("inbox") },
+            { id: "jazz.msgopen", title: "Open linked card", group: "Jazz", bind: "o", enabled: () => view() === "msg", run: () => { const n = currentNotification(); if (n?.cardID && boardCard(n.cardID)) openDetail(n.cardID); else ctx.ui.toast.show({ message: n?.cardID ? "card no longer on board" : "no linked card (cron notification)", variant: "info" }) } },
+            { id: "jazz.msgenter", title: "Open linked card (enter)", group: "Jazz", bind: "return", enabled: () => view() === "msg", run: () => { const n = currentNotification(); if (n?.cardID && boardCard(n.cardID)) openDetail(n.cardID) } },
+            { id: "jazz.msgread", title: "Mark notification read", group: "Jazz", bind: "m", enabled: () => view() === "msg", run: () => void ackSelected() },
             { id: "jazz.home", title: "Close jazz", group: "Jazz", bind: "q", run: () => ctx.ui.router.navigate({ type: "home" }) },
             { id: "jazz.refresh", title: "Refresh jazz", group: "Jazz", bind: "f5", run: () => void refresh() },
             // kanban view — arrows navigate selection only (no mutation)
@@ -356,7 +364,7 @@ export default Plugin.define({
             { id: "jazz.moveright", title: "Move card right", group: "Jazz", bind: "shift+l", enabled: () => view() === "kanban", run: () => void moveSelected(1) },
             // archive the selected done/cancelled lane
             { id: "jazz.archive", title: "Archive lane (done/cancelled)", group: "Jazz", bind: "shift+a", enabled: () => view() === "kanban" && (laneNames()[sel().lane] === "done" || laneNames()[sel().lane] === "cancelled"), run: () => void archiveSelectedLane() },
-            { id: "jazz.enter", title: "Open card detail", group: "Jazz", bind: "return", enabled: () => view() === "kanban" || view() === "inbox", run: () => { if (view() === "kanban") { const card = cardsIn(laneNames()[sel().lane] ?? "")[sel().card]; if (card) openDetail(card.id) } else { const n = unreadFirst()[inboxSel()]; if (n?.cardID) openDetail(n.cardID) } } },
+            { id: "jazz.enter", title: "Open detail", group: "Jazz", bind: "return", enabled: () => view() === "kanban" || view() === "inbox", run: () => { if (view() === "kanban") { const card = cardsIn(laneNames()[sel().lane] ?? "")[sel().card]; if (card) openDetail(card.id) } else { const n = unreadFirst()[inboxSel()]; if (!n) return; if (!n.read) void jazz["inbox.ack"]({ id: n.id }).then(() => void refresh()); setView("msg") } } },
             { id: "jazz.new", title: "New card", group: "Jazz", bind: "n", enabled: () => view() === "kanban" || view() === "dash", run: () => void newCard() },
             { id: "jazz.remove", title: "Remove card", group: "Jazz", bind: "x", enabled: () => view() === "kanban", run: () => void removeSelected() },
             // inbox view
@@ -375,6 +383,15 @@ export default Plugin.define({
             { id: "jazz.accept", title: "Accept card (review → done)", group: "Jazz", bind: "a", enabled: () => view() === "detail" && currentCard()?.lane === "review", run: () => void decide("accept") },
             { id: "jazz.cancelcard", title: "Cancel card (→ cancelled)", group: "Jazz", bind: "shift+x", enabled: () => view() === "detail" && (currentCard()?.lane === "review" || currentCard()?.lane === "failed"), run: () => void decide("cancel") },
             { id: "jazz.requeue", title: "Requeue card (→ triage)", group: "Jazz", bind: "shift+r", enabled: () => view() === "detail" && (currentCard()?.lane === "review" || currentCard()?.lane === "failed"), run: () => void decide("requeue") },
+            // card detail: scroll the windowed detail pane
+            { id: "jazz.dlineup", title: "Detail scroll up one line", group: "Jazz", bind: "up", enabled: () => view() === "detail", run: () => setDetailScroll((v) => v - 1) },
+            { id: "jazz.dlinedown", title: "Detail scroll down one line", group: "Jazz", bind: "down", enabled: () => view() === "detail", run: () => setDetailScroll((v) => v + 1) },
+            { id: "jazz.dj", title: "Detail scroll down (vim)", group: "Jazz", bind: "j", enabled: () => view() === "detail", run: () => setDetailScroll((v) => v + 1) },
+            { id: "jazz.dk", title: "Detail scroll up (vim)", group: "Jazz", bind: "k", enabled: () => view() === "detail", run: () => setDetailScroll((v) => v - 1) },
+            { id: "jazz.dhalfdown", title: "Detail half page down", group: "Jazz", bind: "ctrl+d", enabled: () => view() === "detail", run: () => setDetailScroll((v) => v + 12) },
+            { id: "jazz.dhalfup", title: "Detail half page up", group: "Jazz", bind: "ctrl+u", enabled: () => view() === "detail", run: () => setDetailScroll((v) => v - 12) },
+            { id: "jazz.dtop", title: "Detail jump to top", group: "Jazz", bind: "g", enabled: () => view() === "detail", run: () => setDetailScroll(0) },
+            { id: "jazz.dend", title: "Detail jump to end", group: "Jazz", bind: "G", enabled: () => view() === "detail", run: () => setDetailScroll(Number.MAX_SAFE_INTEGER) },
             ]),
           }))
         onCleanup(() => {
@@ -419,7 +436,33 @@ export default Plugin.define({
             <KanbanView board={board()} laneNames={laneNames()} cardsIn={cardsIn} sel={sel()} />
           </Show>
           <Show when={view() === "detail" && currentCard()}>
-            {(card) => <DetailView card={card()} />}
+            {(card) => <DetailView card={card()} scroll={detailScroll} setScroll={setDetailScroll} />}
+          </Show>
+          <Show when={view() === "msg" ? currentNotification() : null}>
+            {(n) => (
+              <box style={{ flexDirection: "column", flexGrow: 1 }} border={true} title={` message · ${n().kind} `}>
+                <text fg="#d29922">{`${n().kind} · ${n().source} · ${n().read ? "read" : "unread"}`}</text>
+                <text fg="#8b949e">{n().ts.slice(5, 16)}</text>
+                <text> </text>
+                <For each={wrapLine(n().message, DETAIL_WRAP)}>{(t) => <text>{t}</text>}</For>
+                <text> </text>
+                <Show when={n().cardID}>
+                  {(cid) => {
+                    const card = boardCard(cid())
+                    return (
+                      <text fg={card ? "#7ee787" : "#666"}>
+                        {card ? `card ${cid()} · ${card.lane} — o to open` : `card ${cid()} — no longer on board`}
+                      </text>
+                    )
+                  }}
+                </Show>
+                <Show when={n().jobID}>
+                  {(jid) => <text fg="#8b949e">{`job ${jid()}`}</text>}
+                </Show>
+                <text> </text>
+                <text fg="#666"> o open linked card · m mark read · escape back to inbox</text>
+              </box>
+            )}
           </Show>
           <text fg="#666">
             {` i inbox (${unread()}) · c cron · k kanban · d dashboard · q close · registry ${registryTotal()} · ${new Date().toLocaleTimeString()}`}
@@ -490,7 +533,7 @@ export default Plugin.define({
           <Show when={props.notifications.length === 0}>
             <text fg="#666"> inbox empty — nothing to review</text>
           </Show>
-          <text fg="#666"> ↑/↓ select · c clear · C clear all · m read · M all · return open card · d dashboard</text>
+          <text fg="#666"> ↑/↓ select · c clear · C clear all · m read · M all · return open message · d dashboard</text>
         </box>
       )
     }
@@ -571,47 +614,103 @@ export default Plugin.define({
       )
     }
 
-    function DetailView(props: { card: Card }) {
-      const c = props.card
-      const last = <T,>(arr: T[], n: number) => [...arr].slice(-n).reverse()
+    /** Word-wrap a string at `width`, respecting existing newlines, hard-breaking over-long words. */
+    function wrapLine(s: string, width: number): string[] {
+      const out: string[] = []
+      for (const para of s.split("\n")) {
+        const words = para.trim().split(/\s+/).filter(Boolean)
+        if (words.length === 0) {
+          out.push("")
+          continue
+        }
+        let cur = ""
+        const flush = () => {
+          if (cur) {
+            out.push(cur)
+            cur = ""
+          }
+        }
+        for (let w of words) {
+          while (w.length > width) {
+            flush()
+            out.push(w.slice(0, width))
+            w = w.slice(width)
+          }
+          if (!cur) cur = w
+          else if (cur.length + 1 + w.length <= width) cur += ` ${w}`
+          else {
+            flush()
+            cur = w
+          }
+        }
+        flush()
+      }
+      return out
+    }
+
+    const DETAIL_VIEWPORT = 24
+    const DETAIL_WRAP = 90
+
+    function DetailView(props: { card: Card; scroll: () => number; setScroll: (v: number | ((p: number) => number)) => void }) {
+      const lastN = <T,>(arr: T[], n: number) => [...arr].slice(-n).reverse()
       const hist = (h: HistoryEntry) => `${h.ts.slice(5, 16)} ${h.kind.padEnd(9, " ")} ${h.actor.padEnd(12, " ")} ${h.detail ?? ""}${h.from ? ` ${h.from}→${h.to}` : ""}`
-      const decidable = c.lane === "review" || c.lane === "failed"
+      const decidable = () => props.card.lane === "review" || props.card.lane === "failed"
+
+      // Reset to top when a different card is opened.
+      createEffect(on(() => props.card.id, () => props.setScroll(0), { defer: true }))
+
+      // Pre-wrapped, color-tagged content lines. Reactive: card refreshes rewrap.
+      const lines = createMemo(() => {
+        const c = props.card
+        const arr: Array<{ t: string; fg?: string }> = []
+        for (const t of wrapLine(`[p${c.priority}] ${c.title}`, DETAIL_WRAP)) arr.push({ t, fg: PRIORITY_COLOR[c.priority] })
+        arr.push({ t: `profile: ${c.profile ?? "unassigned"} · source: ${c.source} · opened ${c.created.slice(5, 16)}`, fg: "#8b949e" })
+        arr.push({ t: "" })
+        if (c.details?.trim()) {
+          arr.push({ t: "── details ──", fg: "#8b949e" })
+          for (const t of wrapLine(c.details, DETAIL_WRAP)) arr.push({ t })
+          arr.push({ t: "" })
+        }
+        arr.push({ t: `── comments (${c.comments.length}, newest first) ──`, fg: "#8b949e" })
+        if (c.comments.length === 0) arr.push({ t: "  (none)", fg: "#666" })
+        for (const m of lastN(c.comments, c.comments.length)) {
+          arr.push({ t: `● ${m.author} · ${m.ts.slice(5, 16)}`, fg: "#d29922" })
+          for (const t of wrapLine(m.body, DETAIL_WRAP - 2)) arr.push({ t: `  ${t}` })
+          arr.push({ t: "" })
+        }
+        return arr
+      })
+      const off = createMemo(() => Math.min(Math.max(0, props.scroll()), Math.max(0, lines().length - DETAIL_VIEWPORT)))
+      const visible = createMemo(() => lines().slice(off(), off() + DETAIL_VIEWPORT))
+
       return (
         <box style={{ flexDirection: "column", flexGrow: 1 }}>
           <box style={{ flexDirection: "row", flexGrow: 1 }}>
-            <box style={{ flexDirection: "column", flexGrow: 1, border: true }} title={` ${c.id} · ${c.lane} `}>
-              <text fg={PRIORITY_COLOR[c.priority]}>{`[${c.priority}] ${c.title}`}</text>
-              <text>{`profile: ${c.profile ?? "unassigned"} · source: ${c.source} · p${c.priority}`}</text>
-              <text>{`details: ${c.details ?? "—"}`}</text>
-              <text> </text>
-              <text fg="#8b949e">assignments:</text>
-              <For each={c.assignments}>
-                {(a) => <text>{` ${a.profile} ${a.startedAt.slice(5, 16)}→${a.endedAt?.slice(5, 16) ?? "now"} ${a.outcome ?? "working"}`}</text>}
+            <box style={{ flexDirection: "column", flexGrow: 1, border: true }} title={` ${props.card.id} · ${props.card.lane} `}>
+              <For each={visible()}>
+                {(l) => <text fg={l.fg}>{l.t}</text>}
               </For>
-              <Show when={c.assignments.length === 0}>
-                <text fg="#666"> (none yet)</text>
-              </Show>
-              <text> </text>
-              <text fg="#8b949e">comments (newest first):</text>
-              <For each={last(c.comments, 10)}>
-                {(m) => <text>{` ${m.author}: ${m.body.slice(0, 70)}`}</text>}
-              </For>
-              <Show when={c.comments.length === 0}>
-                <text fg="#666"> (none)</text>
+              <Show when={lines().length > DETAIL_VIEWPORT}>
+                <text fg="#666">{` ── lines ${off() + 1}–${Math.min(off() + DETAIL_VIEWPORT, lines().length)} of ${lines().length} ──`}</text>
               </Show>
             </box>
             <box style={{ flexDirection: "column", width: "46%", border: true }} title=" history (newest first) ">
-              <For each={last(c.history, 14)}>
+              <For each={lastN(props.card.history, 30)}>
                 {(h) => <text>{hist(h).slice(0, 74)}</text>}
               </For>
+              <Show when={props.card.history.length > 30}>
+                <text fg="#666">{` … ${props.card.history.length - 30} older`}</text>
+              </Show>
             </box>
           </box>
-          <Show when={decidable}>
+          <Show when={decidable()}>
             <box style={{ border: true, borderColor: "#d29922" }} title=" verdict ">
-              <text wrapMode="none">{c.lane === "review" ? " a done · X cancel · R requeue for rework" : " X cancel · R requeue for rework"}</text>
+              <text wrapMode="none">{props.card.lane === "review" ? " a done · X cancel · R requeue for rework" : " X cancel · R requeue for rework"}</text>
             </box>
           </Show>
-          <text fg="#666"> p comment · d dashboard</text>
+          <text fg="#666">
+            {` p comment · ↑/↓ or j/k line · ctrl+d/u half page · g/G ends · d dashboard`}
+          </text>
         </box>
       )
     }
