@@ -10,6 +10,7 @@ import type { Notification } from "./inbox"
 import { createCronService, CronError, type CronUpsertInput } from "./cron-service"
 import { catchupPlan, dueJobs, leaseAlive, nextRunISO, type CatchupPolicy, type CronJob } from "./cron"
 import { makeFireJob } from "./cron-fire"
+import { budgetKillRecord, createBudgetWatch } from "./session-budget"
 import { createLinkRegistry, canSubmitReview, isTerminalOutcome, OUTCOME_LANES as OUTCOME_LANES_MAP, planOutcome, reviewGuard, type SessionOutcome } from "./link"
 import { createRoutingService } from "./routing-service"
 import { resolveWorkerAgent } from "./agent-resolve"
@@ -23,6 +24,12 @@ const LEASE_MS = 30_000
  * longest legitimate fire — invest-daily-check's dispatch script allows 300s
  * internally, plus its own model turns. */
 const FIRE_TIMEOUT_MS = 10 * 60_000
+/** Max wall-clock for a cron-fired SESSION (not just the fire call). The 2026-10-04
+ * burn audit: two triage-sweep sessions ran 3-6h and burned ~910M tokens after the
+ * fire prompt resolved — fireTimeoutMs bounds the tick, not the session. Budget
+ * kills must exceed the longest legitimate job (same bound as FIRE_TIMEOUT_MS).
+ * Card-worker sessions are deliberately not covered (requeue cap owns those). */
+const SESSION_BUDGET_MS = 10 * 60_000
 /** Max assignment hops per card before it goes to failed (design §6 loop guards). */
 const HANDOFF_CAP = 6
 
@@ -431,6 +438,36 @@ export default Plugin.define({
       return service.move({ cardID: input.cardID, lane: "blocked", actor })
     }
 
+    // Cron state + session budget watchdog live above the pump: the pump
+    // disarms fired-session timers on terminal outcomes, so both must be in
+    // scope before the event loop starts.
+    const cronService = createCronService(storage)
+    const instanceID = randomUUID()
+
+    // Session budget watchdog: arm on fire, disarm on terminal outcome, kill
+    // at SESSION_BUDGET_MS. firedJobs attributes a kill back to its job for
+    // the run ring; both maps are keyed by sessionID and bounded by the pump.
+    const firedJobs = new Map<string, { jobID: string; jobName: string }>()
+    const budgetWatch = createBudgetWatch({
+      budgetMs: SESSION_BUDGET_MS,
+      kill: (sessionID) => ctx.session.interrupt({ sessionID }),
+      onKill: async (sessionID) => {
+        const fired = firedJobs.get(sessionID)
+        if (!fired) return // session we can't attribute — interrupt already landed
+        firedJobs.delete(sessionID)
+        await cronService.appendRun(budgetKillRecord({ ...fired, sessionID, budgetMs: SESSION_BUDGET_MS }))
+        // kind "failed" directly: cronNotifyKind returns "failed" for every
+        // !ok outcome regardless of allowNotify — a budget kill is an anomaly
+        // and must never go silent, same contract as fire failures.
+        await notify({
+          source: "cron",
+          kind: "failed",
+          message: `cron ${fired.jobName} (${fired.jobID}) killed: session budget ${SESSION_BUDGET_MS}ms exceeded — session ${sessionID} interrupted`,
+          jobID: fired.jobID,
+        })
+      },
+    })
+
     const evController = new AbortController()
     const pump = (async () => {
       try {
@@ -442,6 +479,13 @@ export default Plugin.define({
           const data = (event as { data?: { sessionID?: string } }).data
           const sessionID = data?.sessionID
           if (!sessionID) continue
+          // Terminal outcome = the session finished on its own: disarm the
+          // budget watchdog before the card-link check — cron-fired sessions
+          // have no link, but their timers must still die with them.
+          if (isTerminalOutcome(outcome)) {
+            budgetWatch.disarm(sessionID)
+            firedJobs.delete(sessionID)
+          }
           const link = registry.get(sessionID)
           if (!link) continue // session we didn't start — not ours to move
           const board = await service.get()
@@ -495,7 +539,11 @@ export default Plugin.define({
       fireTimeoutMs: FIRE_TIMEOUT_MS,
       // late-bound on purpose: emitCronFired/emitCronFailed are let-bound
       // during setup — preserve the original call-time dereference
-      onFired: (e) => emitCronFired?.(e),
+      onFired: (e) => {
+        firedJobs.set(e.sessionID, { jobID: e.jobID, jobName: e.jobName })
+        budgetWatch.arm(e.sessionID)
+        return emitCronFired?.(e)
+      },
       onFailed: (e) => emitCronFailed?.(e),
     })
 
@@ -929,6 +977,7 @@ export default Plugin.define({
 
     return async () => {
       clearInterval(timer)
+      budgetWatch.dispose()
       evController.abort()
       await pump
       await cronService.clearLease(instanceID)
