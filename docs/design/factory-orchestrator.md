@@ -6,6 +6,14 @@
 
 **Evidence boundary**: This is normative target design, not a declaration of current conformance. Section 12 distinguishes repository inspection from observations supplied by the main assessment session. No live executions or implementation verification were performed to author this document.
 
+**Subsequent foundation checkpoint**: Isolated runtime preflight and a
+nonexecuting source foundation now exist; their evidence and limits are in
+[2026-10-05-foundation-preflight.md](../notes/2026-10-05-foundation-preflight.md).
+The pure reducer/store contract and read-only safety gates do not establish
+effectful-controller or factory conformance. Gavin selected fail-closed
+verdict/requeue/grant behavior while a trusted human channel is unavailable.
+The default legacy mode is unchanged, not retroactively secured.
+
 ## 1. Decisions, classification, and supersession
 
 The agreed direction is:

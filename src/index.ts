@@ -16,6 +16,8 @@ import { createRoutingService } from "./routing-service"
 import { resolveWorkerAgent } from "./agent-resolve"
 import { normalizeRegistry, searchProfiles, topCandidates, type RegistryEntry } from "./profiles"
 import { JazzRpc } from "./rpc"
+import { parseFactoryMode } from "./factory-mode"
+import { setupFoundation } from "./foundation-plugin"
 
 const TICK_MS = 15_000
 const LEASE_MS = 30_000
@@ -53,6 +55,8 @@ const LANE_NOTIFY_KINDS: Record<string, string> = {
 export default Plugin.define({
   id: "opencode-jazz",
   async setup(ctx) {
+    const factory = parseFactoryMode(ctx.options.factory)
+    if (factory.mode === "foundation") return setupFoundation(ctx)
     const storage = asJsonStorage(ctx.storage)
     const options = (ctx.options ?? {}) as {
       lanes?: unknown

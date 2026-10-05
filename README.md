@@ -26,6 +26,47 @@ available soul roles; registry membership is not proof of an executable agent.
 See the target contract's evidence ledger and acceptance matrix before treating
 this as an end-to-end autonomous factory.
 
+### Experimental execution foundation (nonexecuting)
+
+This checkout adds a pure execution-state reducer, a strict one-envelope store
+contract, and an **opt-in, read-only foundation branch**. It is not a deployed
+execution controller. Omitted `factory` options preserve the legacy behavior
+described below, including its known authorization and stop-accounting gaps.
+
+The foundation branch (`factory: { mode: "foundation" }` in the plugin setup
+options) returns before legacy dispatcher/cron/event-pump initialization. It
+denies **all** mutations and execution requests, including intake, comments,
+verdicts, requeues, archive/removal, cron firing and inbox changes. There is no
+public claim, stop-receipt, settlement or budget-grant API. `factory.status`
+reports missing ownership, managed-child-stop and human-authority prerequisites;
+retained held executions remain `unknown` on diagnostic recovery. Unknown or
+corrupt inventory is explicitly unavailable, not an empty pool.
+
+**Do not turn this on in the daily service or use it as a hot-reload security
+boundary.** The verified route is the fresh isolated test deployment below,
+which injects these setup options; configuration-loader activation and TUI
+presentation have not been validated. Existing legacy state is refused, not
+migrated. `namespaceDirectory`, if supplied, is only a diagnostic hint—not
+storage isolation, a lock, or authority. Other plugins and same-UID writers are
+outside this branch's protection.
+
+```bash
+npm test
+npm run typecheck
+# Inference-free, unique /tmp/opencode namespaces; no provider/auth config copied:
+./node_modules/.bin/vitest run \
+  test/integration/foundation.integration.test.ts \
+  test/integration/foundation-adversarial.integration.test.ts \
+  test/integration/runtime-preflight.integration.test.ts \
+  --fileParallelism false
+```
+
+The internal reducer's stop/ownership fixtures are hypothetical adapter inputs,
+not proof of real execution cleanup or authenticated human authority. Effectful
+launch remains disabled until those contracts exist. See
+[`2026-10-05-foundation-preflight.md`](docs/notes/2026-10-05-foundation-preflight.md)
+for observed runtime hazards, verification boundaries and the next prerequisites.
+
 ## Target lifecycle (agreed direction; not all implemented)
 
 ```text
