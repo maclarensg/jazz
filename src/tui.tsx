@@ -341,9 +341,10 @@ export default Plugin.define({
           mode: "global",
           priority: 10,
           commands: standDownDuringInput([
-            // view switching (c is cron everywhere EXCEPT inbox, where it clears)
+            // View switching is consistent across the dashboard panes;
+            // navigation must never clear an inbox notification.
             { id: "jazz.inbox", title: "Jazz inbox", group: "Jazz", bind: "i", run: () => { setInboxSel(0); setView("inbox") } },
-            { id: "jazz.cron", title: "Jazz cron", group: "Jazz", bind: "c", enabled: () => view() !== "detail" && view() !== "inbox", run: () => { setJobSel(0); setView("cron") } },
+            { id: "jazz.cron", title: "Jazz cron", group: "Jazz", bind: "c", enabled: () => view() !== "detail", run: () => { setJobSel(0); setView("cron") } },
             { id: "jazz.kanban", title: "Jazz kanban", group: "Jazz", bind: "k", enabled: () => view() !== "detail", run: () => setView("kanban") },
             { id: "jazz.dash", title: "Jazz dashboard", group: "Jazz", bind: "d", enabled: () => view() !== "dash", run: () => setView("dash") },
             { id: "jazz.back", title: "Jazz back/dashboard", group: "Jazz", bind: "escape", enabled: () => view() !== "dash" && view() !== "msg", run: () => setView("dash") },
@@ -370,8 +371,8 @@ export default Plugin.define({
             // inbox view
             { id: "jazz.read", title: "Mark notification read", group: "Jazz", bind: "m", enabled: () => view() === "inbox", run: () => void ackSelected() },
             { id: "jazz.readall", title: "Mark all read", group: "Jazz", bind: "shift+m", enabled: () => view() === "inbox", run: () => void ackAll() },
-            { id: "jazz.clear", title: "Clear notification (remove from list)", group: "Jazz", bind: "c", enabled: () => view() === "inbox", run: () => void clearSelected() },
-            { id: "jazz.clearall", title: "Clear all notifications", group: "Jazz", bind: "shift+c", enabled: () => view() === "inbox", run: () => void clearAllInbox() },
+            { id: "jazz.clear", title: "Clear notification (remove from list)", group: "Jazz", bind: "x", enabled: () => view() === "inbox", run: () => void clearSelected() },
+            { id: "jazz.clearall", title: "Clear all notifications", group: "Jazz", bind: "shift+x", enabled: () => view() === "inbox", run: () => void clearAllInbox() },
             // cron view
             { id: "jazz.run", title: "Run cron job now", group: "Jazz", bind: "r", enabled: () => view() === "cron", run: () => void runSelectedJob() },
             { id: "jazz.toggle", title: "Enable/disable cron job", group: "Jazz", bind: "e", enabled: () => view() === "cron", run: () => void toggleJob() },
@@ -533,7 +534,7 @@ export default Plugin.define({
           <Show when={props.notifications.length === 0}>
             <text fg="#666"> inbox empty — nothing to review</text>
           </Show>
-          <text fg="#666"> ↑/↓ select · c clear · C clear all · m read · M all · return open message · d dashboard</text>
+          <text fg="#666"> ↑/↓ select · x clear · X clear all · m read · M all · return open message · d dashboard</text>
         </box>
       )
     }

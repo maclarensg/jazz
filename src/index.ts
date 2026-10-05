@@ -524,8 +524,6 @@ export default Plugin.define({
     // only bridge, arriving in Task 4).
     const cronOptions = (ctx.options ?? {}) as { catchup?: unknown }
     const policy: CatchupPolicy = cronOptions.catchup === "skip-missed" ? "skip-missed" : "fire-missed"
-    const cronService = createCronService(storage)
-    const instanceID = randomUUID()
 
     // Fire bodies live in src/cron-fire.ts (extracted so the agent-resolution
     // fallback is unit-testable): resolution, notification contract, run ring.

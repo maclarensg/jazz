@@ -16,6 +16,23 @@ afterAll(async () => {
 })
 
 describe("board over a real serve", () => {
+  it("returns all nine lanes before any cards or cron jobs exist", async () => {
+    const board = await server.jazz["board.get"]({})
+    expect(board.cards).toEqual({})
+    expect(board.lanes).toEqual({
+      triage: [],
+      backlog: [],
+      ready: [],
+      in_progress: [],
+      blocked: [],
+      failed: [],
+      review: [],
+      done: [],
+      cancelled: [],
+    })
+    expect(await server.jazz["cron.list"]({})).toEqual({ jobs: [] })
+  })
+
   it("round-trips a nonce card through create + board.get", async () => {
     const title = `nonce-${randomUUID()}`
     const card = await server.jazz["card.create"]({ title })

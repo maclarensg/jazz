@@ -44,6 +44,26 @@ session.
 See [`docs/deploy/opencode-jazz.service`](docs/deploy/opencode-jazz.service).
 Run ONE server, not both topologies at once.
 
+## Troubleshooting: missing lanes on an empty board
+
+A healthy fresh board returns all nine lanes, even with no cards. If lane
+headers disappear, check the backend before recreating cards or cron jobs:
+
+```bash
+opencode2 api get /api/plugin
+opencode2 api post /api/rpc/jazz/board.get --data '{"input":{}}'
+npm test
+npm run typecheck
+```
+
+`rpc.unavailable` means Jazz has not registered its backend; it does **not**
+mean the board is empty. Inspect `~/.local/share/opencode/log/opencode.log`
+for `failed to load plugin`. On 2026-10-05, duplicate `cronService` and
+`instanceID` declarations introduced by the watchdog change prevented the
+entire backend from compiling. The entrypoint import test now covers that
+failure. Fixing plugin loading does not recover previously lost persisted
+cards or cron jobs.
+
 ## Using it
 
 Agents get `kanban_*` tools:
@@ -103,8 +123,9 @@ selected lane highlighted); `p` posts a comment on the selected card (works
 from the board and the detail view; `C` still comments from detail), `H`/`L`
 move the selected card between lanes, `A` archives every card in the selected
 done/cancelled lane into the archive store (`archive.get`; count shown in the
-kanban title bar), `n` new, `x` remove; inbox `c` clears the selected
-notification and `C` clears all (removal from the list — `m`/`M` still mark
+kanban title bar), `n` new, `x` remove; `i`/`c`/`k`/`d` consistently switch
+between inbox/cron/kanban/dashboard. Inbox `x` clears the selected
+notification and `X` clears all (removal from the list — `m`/`M` still mark
 read without deleting); card detail with history/comments/assignments; on
 review (or failed) lanes the detail shows a verdict pane — `a` mark done,
 `X` cancel, `R` requeue to triage (rework: post a comment first) — deciding
