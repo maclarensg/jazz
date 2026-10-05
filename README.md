@@ -1,32 +1,66 @@
 # opencode-jazz
 
-Kanban board + cron scheduler + subagent orchestrator for OpenCode V2 — one
-plugin package, six decoupled modules (board, cron, link, inbox, profiles,
-routing), served from the OpenCode backend. Gavin's review lane is the verdict
-gate; Laya routes cards to 250 imported+soul profiles.
+Kanban board + generic cron scheduler + profile-worker dispatch for OpenCode V2 —
+one plugin package, six decoupled modules (board, cron, link, inbox, profiles,
+routing), served from the OpenCode backend. The intended factory keeps Gavin's
+final verdict separate from agent execution and NeoLilith's evidence review.
 
-- Design v2: [`docs/design/v2-orchestrator.md`](docs/design/v2-orchestrator.md) (v1: [`design.md`](docs/design/design.md))
+- **Current target contract:** [`docs/design/factory-orchestrator.md`](docs/design/factory-orchestrator.md)
+- Historical designs: [`v2-orchestrator.md`](docs/design/v2-orchestrator.md), [`design.md`](docs/design/design.md)
 - Target runtime: `opencode2` v2.0.9 (OpenCode V2 plugin API)
 
-## Status (v2, 2026-10-02)
+## Status (2026-10-05): components exist; the target factory is not complete
 
-Implemented and verified: 9-lane board with rich cards (priority, details,
-comments, assignment chain, capped history), inbox notifications, 250-profile
-registry (import pipeline + soul roles), Laya routing log + candidate
-prefilter, handoff loop with exit-semantics guards, review gate
-(accept/cancel/requeue), 3-pane dashboard TUI with i/c/k full views.
-Unit 97/97; integration 22 tests against real `opencode2 serve`
-(model-dependent tests require a healthy model pool — see Known gaps).
+Shipped components include the 9-lane board, rich cards, inbox, 250-entry
+profile registry, routing log/candidate prefilter, fresh worker sessions,
+ready-card dispatch, handoff tools, verdict RPC, and dashboard TUI. The
+startup/navigation repair was verified separately; its exact checks and limits
+are in [`docs/notes/2026-10-05-startup-and-navigation.md`](docs/notes/2026-10-05-startup-and-navigation.md).
 
-## The 9 lanes
+The factory review found **no built-in automatic NeoLilith triage, backlog
+admission, bounded failed rework, or once-per-cycle NeoLilith reviewer**.
+Current dispatch capacity counts open assignments, not confirmed running
+executions. Generic move/create surfaces do not enforce a human-only final
+verdict. The registry's 12 native entries also differ from the live runtime's
+available soul roles; registry membership is not proof of an executable agent.
+See the target contract's evidence ledger and acceptance matrix before treating
+this as an end-to-end autonomous factory.
 
-`triage → (backlog) → ready → in_progress → blocked/failed → review → done | cancelled`
+## Target lifecycle (agreed direction; not all implemented)
 
-- Intake lands in **triage**; a triage agent routes it (Laya) → profile set → **ready**
-- `kanban_work` starts a profile-persona session → **in_progress**
-- Worker finishes: `kanban_submit_review` → **review** · `kanban_handoff` → next profile, back to **ready**
-- Session exits without submitting → **ready**; twice in a row or session failure → **failed**
-- **review** and **failed** are Gavin's: `review.decide` accept → **done**, cancel → **cancelled**, requeue → **triage**
+```text
+intake → triage (NeoLilith) → assigned backlog
+       → resource-aware admission → ready → specialist execution
+execution settles → failed / blocked / review / handoff back to backlog
+failed → safe automatic rework (5 work rounds maximum); exhausted → blocked
+review → one fresh NeoLilith assessment → Gavin's done / cancelled / rework
+```
+
+CPU affinity/cgroup limits, available RAM, workload measurements, and provider
+limits guide admission; hardware does not directly translate into an agent
+count. The pool is execution capacity with fresh sessions, not recycled
+conversations. Capacity is released only after execution-stop reconciliation.
+Dependencies wait in backlog; **blocked** states the specific human decision
+or action needed. The reviewer recommends Done, Cancelled, or rework and
+**does not move the card**.
+
+The five rounds mean the initial workflow plus up to four failure-rework rounds.
+Successful specialist handoffs continue the current round; failure-driven agent
+swaps do not reset the card-wide ceiling.
+
+### Current tools (legacy execution semantics)
+
+- Intake defaults to **triage**; routing is caller-driven, and `kanban_assign`
+  records a profile without moving the card.
+- `kanban_work` creates a session and moves to **in_progress**.
+- `kanban_submit_review` moves to **review** immediately; `kanban_handoff`
+  closes the assignment and moves to **ready** before the old session stops.
+- A successful exit without submission returns to **ready**. The advertised
+  second-exit failure guard resets during ordinary redispatch history; do not
+  rely on it as a retry budget. Failed sessions move to **failed**, with no
+  built-in automatic failed-lane rework.
+- `review.decide` currently accepts/cancels/requeues from review, or cancels/
+  requeues from failed. Its `gavin` actor label is not an authorization boundary.
 
 ## Deploy (shared background service — default)
 
@@ -90,17 +124,19 @@ ack, clear, clear_all).
 
 ## Dispatcher
 
-The dispatcher pulls dispatchable **ready** cards into worker sessions
-automatically — no cron prompt needed. Enabled by default; runs inside the
-cron tick loop under the same leader lease (one dispatcher per storage).
-Every 15s it picks ready cards with no open worker assignment, ordered by
-priority then age, capped at `maxInFlight` concurrent workers (counting ALL
-open assignments on the board, `kanban_work`-spawned included), with a 60s
-per-card cooldown against hammering. Each pick goes through the normal
-`work()` path: Laya-routed profile, persona-composed prompt, existing exit
-semantics (exit without submit_review → back to ready; second consecutive
-exit → failed — so a re-dispatching dispatcher cannot loop on a broken card).
-Dispatch failures land as a system comment on the card.
+The current dispatcher pulls dispatchable **ready** cards into worker sessions
+automatically — no cron prompt needed. It is enabled by default and runs inside
+the 15s cron tick under the existing leader lease. Ready cards with no open
+assignment are ordered by priority then creation time, with a 60s per-card
+cooldown and default `maxInFlight: 3`.
+
+This is **assignment-count limiting, not a running-session pool**: submission,
+block, and handoff can close assignments before sessions stop. Direct work
+requests bypass the planner's capacity check, and cron sessions are not counted.
+The existing lease is not an atomic/fenced cross-instance reservation. There is
+no backlog-to-ready admission step. These are implementation gaps, not the
+resource-aware target policy. Dispatch errors add a system comment; the current
+no-submit history guard does not provide a reliable bounded rework loop.
 
 Configure via plugin options `{ dispatch: { enabled, cooldownMs, maxInFlight } }`;
 `JAZZ_DISPATCH=0` disables it (the integration harness opts out by default so
@@ -151,12 +187,16 @@ review verdicts stamp outcomes — the calibration loop.
 ## Tests
 
 ```bash
-npm test                        # 97 unit (incl. counted registry assertions)
+npm test                        # unit suite; use this run's output for counts
 npm run test:integration        # real opencode2 serve (see Known gaps)
 JAZZ_TEST_MODEL=zai-coding-plan/glm-5.3-flash npm run test:integration  # model override
 ```
 
-## Known gaps (2026-10-02)
+## Historical verification gaps (2026-10-02)
+
+These are historical test reports, not a current quota/health snapshot. The
+2026-10-05 factory gaps and required untested variants are tracked in the
+[current target contract](docs/design/factory-orchestrator.md).
 
 1. **Model-pool dependency** — `link.integration` (v2 exit semantics) and
    `session.probe` need live model credits. The Z.AI plan's session pool was
@@ -175,30 +215,14 @@ JAZZ_TEST_MODEL=zai-coding-plan/glm-5.3-flash npm run test:integration  # model 
    definitions is future work (hybrid personas, design §5).
 
 
-## Using it
-
-Agents get tools: `kanban_create_card`, `kanban_move_card`, `kanban_list_cards`,
-`kanban_remove_card`, `kanban_work` (start a session working a card).
-
-Scripts/clients get the `jazz` RPC over HTTP (`{"input": ...}` body shape):
-
-```
-board.get · card.create · card.move · card.remove · card.work
-cron.upsert · cron.list · cron.remove · cron.runNow · cron.runs
-link.get · link.list
-```
-
-Events: `jazz.card.moved`, `jazz.cron.fired`, `jazz.cron.failed`.
-
-The TUI: `ctrl+j` or `/board` — lane columns, `←`/`→` lanes, `↑`/`↓` cards,
-`H`/`L` move card, n new, x remove, c cron view, r run-now.
-
 ## Cron jobs
 
 Jobs are `{name, cronExpr, prompt, agent?, enabled, allowNotify?}` — generic
 prompt cron. A job fires into a fresh session; the scheduler knows nothing
-about cards. Scheduled card work is composition: the job's prompt tells the
-agent to pull a card and call `kanban_work`.
+about card lanes. Scheduled card work is explicit composition: a prompt may
+create/request card work. Under the target contract, every resulting execution
+uses the shared admission controller; cron cannot bypass its resource limits.
+Fire/admission success is not proof that the scheduled task finished successfully.
 
 `allowNotify` (default `true`) mutes the inbox notification on fired/caught_up
 — set it to `false` on high-frequency jobs so they don't spam the inbox.

@@ -1,5 +1,9 @@
 # opencode-jazz — task plan
 
+**Historical v1 plan.** The [factory contract](factory-orchestrator.md)
+is the current target from 2026-10-05; this earlier agreement does not authorize
+its new implementation phases or prove its acceptance criteria.
+
 **Gate passed**: design agreed by Gavin, 2026-09-28. Every task below is
 red → green → commit. No task starts before the previous one is committed.
 No implementation starts at all until Gavin says go.

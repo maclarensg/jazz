@@ -1,8 +1,15 @@
 # opencode-jazz — design
 
-**Status**: proposed, awaiting agreement (plan gate — no implementation before sign-off)
+**Status**: historical v1 design; original proposal status retained in git history
 **Target runtime**: OpenCode V2, local binary `opencode2` v2.0.9
 **Date**: 2026-09-28
+
+**Current authority (2026-10-05):** [factory-orchestrator.md](factory-orchestrator.md)
+supersedes this document's card lanes, automatic completion/failure moves,
+assignment/session ownership, and scheduling/recovery semantics. Generic
+cron/board separation and package boundaries remain architectural background.
+The v1 plan records its original agreement; this file is not the current
+execution contract or evidence that the target factory is implemented.
 
 ## What it is
 

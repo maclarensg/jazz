@@ -1,10 +1,16 @@
 # opencode-jazz v2 — dashboard, orchestration loop, profile router
 
-**Status**: proposed, awaiting agreement (plan gate — no implementation before sign-off)
+**Status**: historical v2 proposal and implementation-divergence record
 **Target runtime**: OpenCode V2, local binary `opencode2` v2.0.9 (deployed: shared service, symlink)
 **Date**: 2026-10-01
-**Supersedes**: nothing in v1 — extends it. v1 modules (board/cron/link) keep their
-decoupling; v2 adds three new modules (inbox, profiles, routing) and one new lane semantic.
+**Original relationship to v1**: extends the module boundaries and replaces
+v1's session-success-to-Done behavior with a review-first target.
+
+**Current authority (2026-10-05):** [factory-orchestrator.md](factory-orchestrator.md)
+supersedes this document's lifecycle, triage trigger/destination, failed-lane
+policy, handoff scheduling, capacity accounting, review automation, and verdict
+authorization semantics. Layout/profile history and implementation divergences
+below remain useful background, not current normative rules or conformance.
 
 ---
 
@@ -433,4 +439,3 @@ Verification totals at delivery: 97/97 unit, integration 20/22 green with the
 2 model-pool tests blocked (passed in pre-exhaustion runs; see README gaps).
 TUI v2 verified in tmux: dashboard/kanban/detail render, focus navigation,
 migration backfill visible, verdict gating — `docs/notes/tui-checklist-v2.md`.
-
